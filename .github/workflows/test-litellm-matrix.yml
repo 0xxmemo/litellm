@@ -18,9 +18,13 @@ jobs:
       matrix:
         test-group:
           # tests/test_litellm split by subdirectory (~560 files total)
-          - name: "llms"
-            path: "tests/test_litellm/llms"
-            workers: 4
+          # Vertex AI tests separated for better isolation (prevent auth/env pollution)
+          - name: "llms-vertex"
+            path: "tests/test_litellm/llms/vertex_ai"
+            workers: 1
+          - name: "llms-other"
+            path: "tests/test_litellm/llms --ignore=tests/test_litellm/llms/vertex_ai"
+            workers: 2
           # tests/test_litellm/proxy split by subdirectory (~180 files total)
           - name: "proxy-guardrails"
             path: "tests/test_litellm/proxy/guardrails tests/test_litellm/proxy/management_endpoints tests/test_litellm/proxy/management_helpers"
@@ -92,4 +96,5 @@ jobs:
             --tb=short -vv \
             --maxfail=10 \
             -n ${{ matrix.test-group.workers }} \
+            --dist=loadscope \
             --durations=20
