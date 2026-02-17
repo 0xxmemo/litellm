@@ -62,14 +62,14 @@ class Authenticator:
                         "ChatGPT refresh token failed, re-login required: %s", exc
                     )
 
-        cooldown_remaining = self._get_device_code_cooldown_remaining(auth_data)
-        if cooldown_remaining > 0:
-            token = self._wait_for_access_token(cooldown_remaining)
-            if token:
-                return token
-
-        tokens = self._login_device_code()
-        return tokens["access_token"]
+        raise GetAccessTokenError(
+            message=(
+                "ChatGPT OAuth tokens are missing or expired. "
+                "Run 'python auth.py chatgpt' from your LiteLLM config directory "
+                "to authenticate, or refresh with 'python auth.py refresh chatgpt'."
+            ),
+            status_code=401,
+        )
 
     def get_account_id(self) -> Optional[str]:
         auth_data = self._read_auth_file()

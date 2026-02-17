@@ -87,8 +87,14 @@ class Authenticator:
                         "Gemini CLI refresh token failed, re-login required: %s", exc
                     )
 
-        tokens = self._login_oauth_pkce()
-        return tokens["access_token"]
+        raise GetAccessTokenError(
+            message=(
+                "Gemini CLI OAuth tokens are missing or expired. "
+                "Run 'python auth.py gemini' from your LiteLLM config directory "
+                "to authenticate, or refresh with 'python auth.py refresh gemini'."
+            ),
+            status_code=401,
+        )
 
     def get_project_id(self) -> Optional[str]:
         auth_data = self._read_auth_file()
