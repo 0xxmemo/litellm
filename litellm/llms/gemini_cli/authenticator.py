@@ -419,30 +419,64 @@ class Authenticator:
     def _discover_project(self, access_token: str) -> Optional[str]:
         """
         Discover the user's Google Cloud project via Code Assist API.
-        Falls back gracefully if no project exists.
+
+        Strategy:
+        1. Check GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_PROJECT_ID env vars
+        2. Call loadCodeAssist (with project hint if available)
+        3. Fall back to listing GCP projects via Resource Manager API
         """
+        env_project = (
+            os.getenv("GOOGLE_CLOUD_PROJECT")
+            or os.getenv("GOOGLE_CLOUD_PROJECT_ID")
+        )
+
         try:
             client = _get_httpx_client()
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            }
+
+            # Call loadCodeAssist with project hint
+            body = {}
+            if env_project:
+                body["cloudaicompanionProject"] = env_project
             resp = client.post(
                 f"{GEMINI_CLI_CODE_ASSIST_URL}/v1internal:loadCodeAssist",
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                json={},
+                headers=headers,
+                json=body,
             )
             if resp.status_code == 200:
                 data = resp.json()
-                project_id = data.get("projectId") or data.get("project_id")
-                if project_id:
-                    verbose_logger.debug(
-                        "Discovered Gemini CLI project: %s", project_id
-                    )
-                    return project_id
+                pid = (
+                    data.get("cloudaicompanionProject")
+                    or data.get("projectId")
+                    or data.get("project_id")
+                )
+                if pid:
+                    verbose_logger.debug("Discovered project: %s", pid)
+                    return pid if isinstance(pid, str) else pid.get("id")
+
+            # Fall back to listing GCP projects
+            if not env_project:
+                resp2 = client.get(
+                    "https://cloudresourcemanager.googleapis.com/v1/projects",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if resp2.status_code == 200:
+                    projects = resp2.json().get("projects", [])
+                    for p in projects:
+                        if "gemini" in p.get("name", "").lower() or "lang" in p.get("projectId", ""):
+                            verbose_logger.debug("Using GCP project: %s", p["projectId"])
+                            return p["projectId"]
+                    if projects:
+                        verbose_logger.debug("Using first GCP project: %s", projects[0]["projectId"])
+                        return projects[0]["projectId"]
+
         except Exception as exc:
             verbose_logger.debug("Project discovery failed (non-fatal): %s", exc)
 
-        return None
+        return env_project
 
     def _build_auth_record(
         self, tokens: Dict[str, Any], project_id: Optional[str]
