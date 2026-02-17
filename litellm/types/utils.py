@@ -3045,6 +3045,7 @@ GenericBudgetConfigType = Dict[str, BudgetConfig]
 class LlmProviders(str, Enum):
     OPENAI = "openai"
     CHATGPT = "chatgpt"
+    GEMINI_CLI = "gemini_cli"
     OPENAI_LIKE = "openai_like"  # embedding only
     JINA_AI = "jina_ai"
     XAI = "xai"
