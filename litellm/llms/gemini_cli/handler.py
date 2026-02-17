@@ -68,9 +68,13 @@ def _wrap_request(model: str, project_id: Optional[str], request_body: dict) -> 
         "project": "<project-id>",
         "request": { <standard generateContent body> }
     }
+
+    Note: the model field must NOT have a "models/" prefix — the Code Assist
+    API expects the bare model name (e.g. "gemini-2.5-flash-lite").
     """
+    bare_model = model.removeprefix("models/")
     wrapped = {
-        "model": model,
+        "model": bare_model,
         "request": request_body,
     }
     if project_id:
