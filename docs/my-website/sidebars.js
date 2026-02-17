@@ -176,6 +176,7 @@ const sidebars = {
         "tutorials/copilotkit_sdk",
         "tutorials/google_adk",
         "tutorials/livekit_xai_realtime",
+        "projects/openai-agents"
       ]
     },
 
@@ -572,6 +573,7 @@ const sidebars = {
             "proxy/managed_finetuning",
           ]
         },
+        "evals_api",
         "generateContent",
         "apply_guardrail",
         "bedrock_invoke",

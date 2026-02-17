@@ -1083,7 +1083,7 @@
         "supports_vision": true,
         "tool_use_system_prompt_tokens": 346
     },
-    "apac.anthropic.claude-opus-4-6-v1": {
+    "au.anthropic.claude-opus-4-6-v1": {
         "cache_creation_input_token_cost": 6.875e-06,
         "cache_creation_input_token_cost_above_200k_tokens": 1.375e-05,
         "cache_read_input_token_cost": 5.5e-07,
@@ -12456,6 +12456,19 @@
         "supports_tool_choice": true,
         "supports_web_search": true
     },
+    "fireworks_ai/accounts/fireworks/models/kimi-k2p5": {
+        "input_cost_per_token": 6e-07,
+        "litellm_provider": "fireworks_ai",
+        "max_input_tokens": 262144,
+        "max_output_tokens": 262144,
+        "max_tokens": 262144,
+        "mode": "chat",
+        "output_cost_per_token": 3e-06,
+        "source": "https://fireworks.ai/pricing",
+        "supports_function_calling": true,
+        "supports_response_schema": true,
+        "supports_tool_choice": true
+    },
     "fireworks_ai/accounts/fireworks/models/llama-v3p1-405b-instruct": {
         "input_cost_per_token": 3e-06,
         "litellm_provider": "fireworks_ai",
@@ -17099,6 +17112,19 @@
         "supports_parallel_function_calling": true,
         "supports_vision": true
     },
+    "github_copilot/claude-opus-4.6-fast": {
+        "litellm_provider": "github_copilot",
+        "max_input_tokens": 128000,
+        "max_output_tokens": 16000,
+        "max_tokens": 16000,
+        "mode": "chat",
+        "supported_endpoints": [
+            "/v1/chat/completions"
+        ],
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_vision": true
+    },
     "github_copilot/claude-opus-41": {
         "litellm_provider": "github_copilot",
         "max_input_tokens": 80000,
@@ -17343,6 +17369,20 @@
         "mode": "chat",
         "supported_endpoints": [
             "/v1/chat/completions",
+            "/v1/responses"
+        ],
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_response_schema": true,
+        "supports_vision": true
+    },
+    "github_copilot/gpt-5.3-codex": {
+        "litellm_provider": "github_copilot",
+        "max_input_tokens": 128000,
+        "max_output_tokens": 128000,
+        "max_tokens": 128000,
+        "mode": "responses",
+        "supported_endpoints": [
             "/v1/responses"
         ],
         "supports_function_calling": true,
@@ -23759,7 +23799,7 @@
         "max_output_tokens": 131072,
         "max_tokens": 131072,
         "mode": "chat",
-        "output_cost_per_token": 1.5e-07,
+        "output_cost_per_token": 1.5e-05,
         "source": "https://www.oracle.com/artificial-intelligence/generative-ai/generative-ai-service/pricing",
         "supports_function_calling": true,
         "supports_response_schema": false
@@ -23807,7 +23847,7 @@
         "max_output_tokens": 128000,
         "max_tokens": 128000,
         "mode": "chat",
-        "output_cost_per_token": 1.5e-07,
+        "output_cost_per_token": 1.5e-05,
         "source": "https://www.oracle.com/artificial-intelligence/generative-ai/generative-ai-service/pricing",
         "supports_function_calling": true,
         "supports_response_schema": false
