@@ -19,7 +19,7 @@ GEMINI_CLI_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GEMINI_CLI_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GEMINI_CLI_USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json"
 
-# Code Assist API
+# Native Gemini API base (auth via OAuth Bearer, not API key)
 GEMINI_CLI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 # OAuth scopes required by Gemini CLI
