@@ -4071,7 +4071,7 @@ def get_optional_params(  # noqa: PLR0915
             ),
         )
 
-    elif custom_llm_provider == "gemini":
+    elif custom_llm_provider in ("gemini", "gemini_cli"):
         optional_params = litellm.GoogleAIStudioGeminiConfig().map_openai_params(
             non_default_params=non_default_params,
             optional_params=optional_params,
@@ -5132,7 +5132,7 @@ def _strip_model_name(model: str, custom_llm_provider: Optional[str]) -> str:
         stripped_bedrock_model = _get_base_bedrock_model(model_name=model)
         return stripped_bedrock_model
     elif custom_llm_provider and (
-        custom_llm_provider == "vertex_ai" or custom_llm_provider == "gemini"
+        custom_llm_provider in ("vertex_ai", "gemini", "gemini_cli")
     ):
         strip_version = _strip_stable_vertex_version(model_name=model)
         return strip_version
@@ -6190,6 +6190,9 @@ def validate_environment(  # noqa: PLR0915
             else:
                 missing_keys.append("GOOGLE_API_KEY")
                 missing_keys.append("GEMINI_API_KEY")
+        elif custom_llm_provider == "gemini_cli":
+            # OAuth-based: tokens are in auth file, not env vars
+            keys_in_environment = True
         elif custom_llm_provider == "groq":
             if "GROQ_API_KEY" in os.environ:
                 keys_in_environment = True

@@ -3357,6 +3357,29 @@ def completion(  # type: ignore # noqa: PLR0915
                 extra_headers=headers,
             )
 
+        elif custom_llm_provider == "gemini_cli":
+            from litellm.llms.gemini_cli.handler import GeminiCLIHandler
+
+            gemini_cli_handler = GeminiCLIHandler()
+            api_base = api_base or litellm.api_base
+            new_params = safe_deep_copy(optional_params or {})
+            response = gemini_cli_handler.completion(
+                model=model,
+                messages=messages,
+                model_response=model_response,
+                print_verbose=print_verbose,
+                optional_params=new_params,
+                litellm_params=litellm_params,  # type: ignore
+                logger_fn=logger_fn,
+                encoding=_get_encoding(),
+                logging_obj=logging,
+                acompletion=acompletion,
+                timeout=timeout,
+                client=client,
+                api_base=api_base,
+                extra_headers=headers,
+            )
+
         elif custom_llm_provider == "vertex_ai":
             vertex_ai_project = (
                 optional_params.pop("vertex_project", None)
