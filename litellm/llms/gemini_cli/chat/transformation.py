@@ -24,3 +24,4 @@ class GeminiCLIConfig(GoogleAIStudioGeminiConfig):
     """
 
     pass
+
