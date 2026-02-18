@@ -2780,6 +2780,7 @@ def register_model(model_cost: Union[str, dict]):  # noqa: PLR0915
     _skip_get_model_info_providers = {
         LlmProviders.GITHUB_COPILOT.value,
         LlmProviders.CHATGPT.value,
+        LlmProviders.QWEN_PORTAL.value,
     }
 
     for key, value in loaded_model_cost.items():
@@ -7912,6 +7913,7 @@ class ProviderConfigManager:
             LlmProviders.COMPACTIFAI: (lambda: litellm.CompactifAIChatConfig(), False),
             LlmProviders.GITHUB_COPILOT: (lambda: litellm.GithubCopilotConfig(), False),
             LlmProviders.CHATGPT: (lambda: litellm.ChatGPTConfig(), False),
+            LlmProviders.QWEN_PORTAL: (lambda: litellm.QwenPortalConfig(), False),
             LlmProviders.GEMINI_CLI: (lambda: litellm.GeminiCLIConfig(), False),
             LlmProviders.GIGACHAT: (lambda: litellm.GigaChatConfig(), False),
             LlmProviders.RAGFLOW: (lambda: litellm.RAGFlowConfig(), False),
