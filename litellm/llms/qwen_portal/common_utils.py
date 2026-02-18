@@ -15,7 +15,7 @@ QWEN_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_SCOPE = "openid profile email model.completion"
 QWEN_DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 QWEN_USER_AGENT = "qwen-code/1.0.0"
-QWEN_DEFAULT_API_BASE = "https://chat.qwen.ai/api/v1"
+QWEN_DEFAULT_API_BASE = "https://portal.qwen.ai/v1"
 
 
 class QwenPortalAuthError(BaseLLMException):

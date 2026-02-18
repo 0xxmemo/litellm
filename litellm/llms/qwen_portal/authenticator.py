@@ -51,9 +51,17 @@ class Authenticator:
         if auth_data:
             resource_url = auth_data.get("resource_url")
             if resource_url:
-                return resource_url
+                return self._normalize_url(resource_url)
 
         return QWEN_DEFAULT_API_BASE
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        if not url.startswith("http"):
+            url = f"https://{url}"
+        if not url.endswith("/v1"):
+            url = f"{url}/v1"
+        return url
 
     def get_access_token(self) -> str:
         auth_data = self._read_auth_file()
