@@ -36,12 +36,11 @@ class QwenPortalConfig(OpenAIConfig):
         dynamic_api_base = self.authenticator.get_api_base()
         try:
             dynamic_api_key = self.authenticator.get_access_token()
-        except GetAccessTokenError as e:
-            raise AuthenticationError(
-                model=model,
-                llm_provider=custom_llm_provider,
-                message=str(e),
-            )
+        except GetAccessTokenError:
+            # Allow deployment creation even when auth is unavailable
+            # (e.g. expired tokens at proxy startup). Actual auth is
+            # resolved lazily in validate_environment at request time.
+            dynamic_api_key = "qwen-portal-pending-auth"
         return dynamic_api_base, dynamic_api_key, custom_llm_provider
 
     def validate_environment(
@@ -54,10 +53,18 @@ class QwenPortalConfig(OpenAIConfig):
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
     ) -> dict:
-        validated_headers = super().validate_environment(
-            headers, model, messages, optional_params, litellm_params, api_key, api_base
+        try:
+            fresh_token = self.authenticator.get_access_token()
+        except GetAccessTokenError as e:
+            raise AuthenticationError(
+                model=model,
+                llm_provider="qwen_portal",
+                message=str(e),
+            )
+        return super().validate_environment(
+            headers, model, messages, optional_params, litellm_params,
+            fresh_token, api_base,
         )
-        return validated_headers
 
     def map_openai_params(
         self,
