@@ -2518,6 +2518,16 @@ def completion(  # type: ignore # noqa: PLR0915
                     copilot_headers.update(extra_headers)
                 extra_headers = copilot_headers
 
+            if custom_llm_provider == "kimi_code":
+                from litellm.llms.kimi_code.common_utils import (
+                    get_kimi_code_default_headers,
+                )
+
+                kimi_headers = get_kimi_code_default_headers()
+                if extra_headers:
+                    kimi_headers.update(extra_headers)
+                extra_headers = kimi_headers
+
             if extra_headers is not None:
                 optional_params["extra_headers"] = extra_headers
 

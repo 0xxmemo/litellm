@@ -1,5 +1,9 @@
 """
 Constants and helpers for Kimi Code OAuth (device-code flow via auth.kimi.com).
+
+Mirrors header generation from kimi-cli (kimi_cli.auth.oauth._common_headers
+and kimi_cli.llm._kimi_default_headers) so the Kimi API accepts requests
+from this proxy as a recognised coding agent.
 """
 
 import os
@@ -47,6 +51,15 @@ class RefreshAccessTokenError(KimiCodeAuthError):
     pass
 
 
+def _ascii_header_value(value: str, *, fallback: str = "unknown") -> str:
+    try:
+        value.encode("ascii")
+        return value
+    except UnicodeEncodeError:
+        sanitized = value.encode("ascii", errors="ignore").decode("ascii").strip()
+        return sanitized or fallback
+
+
 def _get_device_id() -> str:
     device_id_path = os.path.expanduser("~/.kimi/device_id")
     try:
@@ -57,15 +70,20 @@ def _get_device_id() -> str:
 
 
 def get_kimi_code_default_headers() -> dict:
-    """Headers required by the Kimi Code API to identify the coding agent."""
-    device_id = os.getenv("KIMI_CODE_DEVICE_ID") or _get_device_id()
+    """Headers required by the Kimi Code API to identify the coding agent.
+
+    Reproduces the exact set from kimi-cli's _common_headers() + User-Agent.
+    """
+    device_id = _get_device_id()
     device_name = platform.node() or socket.gethostname()
     device_model = f"{platform.system()} {platform.release()} {platform.machine()}"
-    return {
+    raw = {
         "User-Agent": KIMI_CODE_USER_AGENT,
         "X-Msh-Platform": "kimi_cli",
         "X-Msh-Version": KIMI_CODE_VERSION,
         "X-Msh-Device-Id": device_id,
         "X-Msh-Device-Name": device_name,
         "X-Msh-Device-Model": device_model,
+        "X-Msh-Os-Version": platform.version(),
     }
+    return {k: _ascii_header_value(v) for k, v in raw.items()}
