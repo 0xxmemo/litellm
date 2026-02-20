@@ -3047,6 +3047,7 @@ class LlmProviders(str, Enum):
     CHATGPT = "chatgpt"
     QWEN_PORTAL = "qwen_portal"
     GEMINI_CLI = "gemini_cli"
+    KIMI_CODE = "kimi_code"
     OPENAI_LIKE = "openai_like"  # embedding only
     JINA_AI = "jina_ai"
     XAI = "xai"

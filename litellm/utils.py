@@ -2757,6 +2757,7 @@ def register_model(model_cost: Union[str, dict]):  # noqa: PLR0915
         LlmProviders.GITHUB_COPILOT.value,
         LlmProviders.CHATGPT.value,
         LlmProviders.QWEN_PORTAL.value,
+        LlmProviders.KIMI_CODE.value,
     }
 
     for key, value in loaded_model_cost.items():
@@ -7852,6 +7853,7 @@ class ProviderConfigManager:
             LlmProviders.CHATGPT: (lambda: litellm.ChatGPTConfig(), False),
             LlmProviders.QWEN_PORTAL: (lambda: litellm.QwenPortalConfig(), False),
             LlmProviders.GEMINI_CLI: (lambda: litellm.GeminiCLIConfig(), False),
+            LlmProviders.KIMI_CODE: (lambda: litellm.KimiCodeConfig(), False),
             LlmProviders.GIGACHAT: (lambda: litellm.GigaChatConfig(), False),
             LlmProviders.RAGFLOW: (lambda: litellm.RAGFlowConfig(), False),
             LlmProviders.CUSTOM: (lambda: litellm.OpenAILikeChatConfig(), False),

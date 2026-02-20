@@ -507,6 +507,7 @@ LITELLM_CHAT_PROVIDERS = [
     "github_copilot",  # GitHub Copilot Chat API
     "chatgpt",  # ChatGPT subscription API
     "qwen_portal",  # Qwen Portal OAuth API
+    "kimi_code",  # Kimi Code OAuth API (Moonshot)
     "novita",
     "meta_llama",
     "featherless_ai",
@@ -711,6 +712,7 @@ openai_compatible_providers: List = [
     "github_copilot",  # GitHub Copilot Chat API
     "chatgpt",  # ChatGPT subscription API
     "qwen_portal",  # Qwen Portal OAuth API
+    "kimi_code",  # Kimi Code OAuth API (Moonshot)
     "novita",
     "meta_llama",
     "publicai",  # PublicAI - JSON-configured provider
