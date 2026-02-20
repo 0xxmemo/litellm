@@ -102,3 +102,4 @@ STABILIZATION_TODO.md
 **/playwright-report
 **/*.storageState.json
 **/coverage
+**/*__init__.py
