@@ -780,6 +780,14 @@ def _get_openai_compatible_provider_info(  # noqa: PLR0915
         ) = litellm.QwenPortalConfig()._get_openai_compatible_provider_info(
             model, api_base, api_key, custom_llm_provider
         )
+    elif custom_llm_provider == "kimi_code":
+        (
+            api_base,
+            dynamic_api_key,
+            custom_llm_provider,
+        ) = litellm.KimiCodeConfig()._get_openai_compatible_provider_info(
+            model, api_base, api_key, custom_llm_provider
+        )
     elif custom_llm_provider == "novita":
         api_base = (
             api_base
