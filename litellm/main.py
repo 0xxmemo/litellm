@@ -2456,6 +2456,41 @@ def completion(  # type: ignore # noqa: PLR0915
             logging.post_call(
                 input=messages, api_key=api_key, original_response=response
             )
+        elif custom_llm_provider == "kimi_code":
+            # Kimi Code uses Anthropic Messages format via AnthropicConfig.
+            # Routes through base_llm_http_handler which calls:
+            #   KimiCodeConfig.validate_environment()  → OAuth + agent headers
+            #   KimiCodeConfig.get_complete_url()      → api.kimi.com/coding/v1/messages
+            #   AnthropicConfig.transform_request()    → OpenAI→Anthropic conversion
+            #   AnthropicConfig.transform_response()   → Anthropic→OpenAI conversion
+            try:
+                response = base_llm_http_handler.completion(
+                    model=model,
+                    messages=messages,
+                    headers=headers,
+                    model_response=model_response,
+                    api_key=api_key,
+                    api_base=api_base,
+                    acompletion=acompletion,
+                    logging_obj=logging,
+                    optional_params=optional_params,
+                    litellm_params=litellm_params,
+                    shared_session=shared_session,
+                    timeout=timeout,
+                    client=client,
+                    custom_llm_provider=custom_llm_provider,
+                    encoding=_get_encoding(),
+                    stream=stream,
+                    provider_config=provider_config,
+                )
+            except Exception as e:
+                logging.post_call(
+                    input=messages,
+                    api_key=api_key,
+                    original_response=str(e),
+                    additional_args={"headers": headers},
+                )
+                raise e
         elif (
             model in litellm.open_ai_chat_completion_models
             or custom_llm_provider == "custom_openai"
@@ -2517,16 +2552,6 @@ def completion(  # type: ignore # noqa: PLR0915
                 if extra_headers:
                     copilot_headers.update(extra_headers)
                 extra_headers = copilot_headers
-
-            if custom_llm_provider == "kimi_code":
-                from litellm.llms.kimi_code.common_utils import (
-                    get_kimi_code_default_headers,
-                )
-
-                kimi_headers = get_kimi_code_default_headers()
-                if extra_headers:
-                    kimi_headers.update(extra_headers)
-                extra_headers = kimi_headers
 
             if extra_headers is not None:
                 optional_params["extra_headers"] = extra_headers
