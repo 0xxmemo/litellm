@@ -26,6 +26,7 @@ from .common_utils import (
 )
 
 TOKEN_EXPIRY_SKEW_SECONDS = 60
+_MEM_CACHE_TTL = 60
 
 
 class Authenticator:
@@ -40,6 +41,8 @@ class Authenticator:
             self.token_dir,
             os.getenv("QWEN_PORTAL_AUTH_FILE", "auth.qwen_portal.json"),
         )
+        self._cached_token: Optional[str] = None
+        self._cached_at: float = 0.0
         self._ensure_token_dir()
 
     def get_api_base(self) -> str:
@@ -64,6 +67,16 @@ class Authenticator:
         return url
 
     def get_access_token(self) -> str:
+        now = time.time()
+        if self._cached_token and (now - self._cached_at) < _MEM_CACHE_TTL:
+            return self._cached_token
+
+        token = self._get_access_token_from_disk()
+        self._cached_token = token
+        self._cached_at = now
+        return token
+
+    def _get_access_token_from_disk(self) -> str:
         auth_data = self._read_auth_file()
         if auth_data:
             access_token = auth_data.get("access_token")
