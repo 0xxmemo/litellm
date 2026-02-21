@@ -2457,12 +2457,6 @@ def completion(  # type: ignore # noqa: PLR0915
                 input=messages, api_key=api_key, original_response=response
             )
         elif custom_llm_provider == "kimi_code":
-            # Kimi Code uses Anthropic Messages format via AnthropicConfig.
-            # Routes through base_llm_http_handler which calls:
-            #   KimiCodeConfig.validate_environment()  → OAuth + agent headers
-            #   KimiCodeConfig.get_complete_url()      → api.kimi.com/coding/v1/messages
-            #   AnthropicConfig.transform_request()    → OpenAI→Anthropic conversion
-            #   AnthropicConfig.transform_response()   → Anthropic→OpenAI conversion
             try:
                 response = base_llm_http_handler.completion(
                     model=model,
