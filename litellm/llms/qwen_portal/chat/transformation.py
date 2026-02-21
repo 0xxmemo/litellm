@@ -1,12 +1,23 @@
 """
-QwenPortalConfig — routes requests through the Qwen Portal OpenAI-compatible API
-using OAuth tokens obtained via device-code flow.
+QwenPortalConfig — Qwen Portal provider (OpenAI-compatible).
 
-Follows the same pattern as ChatGPTConfig: extends OpenAIConfig and overrides
-_get_openai_compatible_provider_info() to inject the OAuth Bearer token as api_key.
+The Qwen Portal API at portal.qwen.ai/v1 speaks OpenAI format natively.
+This config handles OAuth authentication via device-code flow.
+
+Routed through base_llm_http_handler (not the OpenAI SDK client) so that
+validate_environment() is called on every request, ensuring OAuth tokens
+are refreshed before they expire.
+
+When clients connect via the proxy's /v1/messages endpoint (Anthropic format),
+LiteLLM's built-in adapter translates Anthropic<>OpenAI automatically.
+
+Authentication:
+  OAuth device-code flow via chat.qwen.ai. Bearer token injected in
+  validate_environment() as the Authorization header.
+  Can also sync credentials from Qwen Code CLI (~/.qwen/oauth_creds.json).
 """
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from litellm.exceptions import AuthenticationError
 from litellm.llms.openai.openai import OpenAIConfig
@@ -17,31 +28,25 @@ from ..common_utils import GetAccessTokenError
 
 
 class QwenPortalConfig(OpenAIConfig):
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        api_base: Optional[str] = None,
-        custom_llm_provider: str = "openai",
-    ) -> None:
+    """
+    Qwen Portal provider — OpenAI format with OAuth auth.
+
+    Extends OpenAIConfig for request/response format.
+    Uses base_llm_http_handler (not OpenAI SDK) for reliable OAuth refresh.
+
+    Overrides:
+      - validate_environment(): OAuth Bearer token on every request
+      - get_complete_url(): Qwen Portal endpoint at /v1/chat/completions
+      - custom_llm_provider: "qwen_portal"
+    """
+
+    def __init__(self) -> None:
         super().__init__()
         self.authenticator = Authenticator()
 
-    def _get_openai_compatible_provider_info(
-        self,
-        model: str,
-        api_base: Optional[str],
-        api_key: Optional[str],
-        custom_llm_provider: str,
-    ) -> Tuple[Optional[str], Optional[str], str]:
-        dynamic_api_base = self.authenticator.get_api_base()
-        try:
-            dynamic_api_key = self.authenticator.get_access_token()
-        except GetAccessTokenError:
-            # Allow deployment creation even when auth is unavailable
-            # (e.g. expired tokens at proxy startup). Actual auth is
-            # resolved lazily in validate_environment at request time.
-            dynamic_api_key = "qwen-portal-pending-auth"
-        return dynamic_api_base, dynamic_api_key, custom_llm_provider
+    @property
+    def custom_llm_provider(self) -> Optional[str]:
+        return "qwen_portal"
 
     def validate_environment(
         self,
@@ -52,28 +57,41 @@ class QwenPortalConfig(OpenAIConfig):
         litellm_params: dict,
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
-    ) -> dict:
+    ) -> Dict:
         try:
-            fresh_token = self.authenticator.get_access_token()
+            access_token = self.authenticator.get_access_token()
         except GetAccessTokenError as e:
             raise AuthenticationError(
                 model=model,
                 llm_provider="qwen_portal",
                 message=str(e),
             )
-        return super().validate_environment(
-            headers, model, messages, optional_params, litellm_params,
-            fresh_token, api_base,
-        )
 
-    def map_openai_params(
-        self,
-        non_default_params: dict,
-        optional_params: dict,
-        model: str,
-        drop_params: bool,
-    ) -> dict:
-        optional_params = super().map_openai_params(
-            non_default_params, optional_params, model, drop_params
+        headers.update(
+            {
+                "authorization": f"Bearer {access_token}",
+                "content-type": "application/json",
+            }
         )
-        return optional_params
+        return headers
+
+    def get_complete_url(
+        self,
+        api_base: Optional[str],
+        api_key: Optional[str],
+        model: str,
+        optional_params: dict,
+        litellm_params: dict,
+        stream: Optional[bool] = None,
+    ) -> str:
+        base = api_base or self.authenticator.get_api_base()
+
+        if base.endswith("/chat/completions"):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}/chat/completions"
+        if base.endswith("/v1/"):
+            return f"{base}chat/completions"
+        if base.endswith("/"):
+            return f"{base}v1/chat/completions"
+        return f"{base}/v1/chat/completions"

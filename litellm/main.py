@@ -2456,7 +2456,7 @@ def completion(  # type: ignore # noqa: PLR0915
             logging.post_call(
                 input=messages, api_key=api_key, original_response=response
             )
-        elif custom_llm_provider == "kimi_code":
+        elif custom_llm_provider in ("kimi_code", "qwen_portal"):
             try:
                 response = base_llm_http_handler.completion(
                     model=model,
