@@ -34,12 +34,13 @@ class GetModelCostMap:
 
     @staticmethod
     def load_local_model_cost_map() -> dict:
-        """Load the local backup model cost map bundled with the package."""
-        content = json.loads(
-            files("litellm")
-            .joinpath("model_prices_and_context_window_backup.json")
-            .read_text(encoding="utf-8")
-        )
+        """Load the local model cost map from the repo root (one level above the package)."""
+        pkg_dir = files("litellm")
+        repo_root = pkg_dir.joinpath("..")
+        primary = repo_root / "model_prices_and_context_window.json"
+        fallback = pkg_dir / "model_prices_and_context_window_backup.json"
+        source = primary if primary.is_file() else fallback
+        content = json.loads(source.read_text(encoding="utf-8"))
         return content
 
     @classmethod

@@ -1,5 +1,8 @@
 """
 Translates from OpenAI's `/v1/chat/completions` to Alibaba Cloud's coding endpoint.
+
+Handles reasoning (enable_thinking / thinking_budget), tool-calling guards for
+thinking mode, web search, code interpreter, and default timeouts/limits.
 """
 
 import re
@@ -26,6 +29,10 @@ _SEARCH_OPTION_KEYS = {
     "enable_source",
     "enable_search_extension",
 }
+
+ALIBABA_DEFAULT_TIMEOUT = 600
+ALIBABA_DEFAULT_STREAM_TIMEOUT = 600
+ALIBABA_DEFAULT_MAX_TOKENS = 16384
 
 
 class AlibabaChatConfig(OpenAIGPTConfig):
@@ -127,6 +134,9 @@ class AlibabaChatConfig(OpenAIGPTConfig):
             if tool_choice is not None and tool_choice not in ("auto", "none"):
                 optional_params.pop("tool_choice", None)
 
+        if "max_tokens" not in optional_params and "max_completion_tokens" not in optional_params:
+            optional_params["max_tokens"] = ALIBABA_DEFAULT_MAX_TOKENS
+
         return optional_params
 
     @overload
@@ -155,6 +165,12 @@ class AlibabaChatConfig(OpenAIGPTConfig):
         return super()._transform_messages(
             messages=messages, model=model, is_async=False
         )
+
+    def get_provider_default_timeout(self) -> Optional[float]:
+        return ALIBABA_DEFAULT_TIMEOUT
+
+    def get_provider_default_stream_timeout(self) -> Optional[float]:
+        return ALIBABA_DEFAULT_STREAM_TIMEOUT
 
     def _get_openai_compatible_provider_info(
         self, api_base: Optional[str], api_key: Optional[str]
