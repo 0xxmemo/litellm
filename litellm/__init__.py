@@ -1513,6 +1513,7 @@ if TYPE_CHECKING:
     from .llms.nebius.chat.transformation import NebiusConfig as NebiusConfig
     from .llms.wandb.chat.transformation import WandbConfig as WandbConfig
     from .llms.dashscope.chat.transformation import DashScopeChatConfig as DashScopeChatConfig
+    from .llms.alibaba.chat.transformation import AlibabaChatConfig as AlibabaChatConfig
     from .llms.moonshot.chat.transformation import MoonshotChatConfig as MoonshotChatConfig
     from .llms.docker_model_runner.chat.transformation import DockerModelRunnerChatConfig as DockerModelRunnerChatConfig
     from .llms.v0.chat.transformation import V0ChatConfig as V0ChatConfig
