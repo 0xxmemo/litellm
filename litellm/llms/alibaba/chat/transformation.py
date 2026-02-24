@@ -19,6 +19,7 @@ _THINKING_BUDGET_MAP = {
     "high": 10_000,
 }
 _CODER_PATTERN = re.compile(r"coder", re.IGNORECASE)
+_DEFAULT_THINKING_MODELS = re.compile(r"qwen3\.5", re.IGNORECASE)
 _SEARCH_OPTION_KEYS = {
     "forced_search",
     "search_strategy",
@@ -62,24 +63,40 @@ class AlibabaChatConfig(OpenAIGPTConfig):
             optional_params["extra_body"] = extra_body
 
         is_coder_model = bool(_CODER_PATTERN.search(model))
+        has_default_thinking = bool(_DEFAULT_THINKING_MODELS.search(model))
         thinking_value = optional_params.pop("thinking", None)
         reasoning_effort = optional_params.pop("reasoning_effort", None)
 
-        # Qwen coder models on this endpoint do not expose thinking mode.
-        if not is_coder_model:
-            if (
-                isinstance(thinking_value, dict)
-                and thinking_value.get("type") == "enabled"
-            ):
-                extra_body["enable_thinking"] = True
-                budget = thinking_value.get("budget_tokens")
-                if isinstance(budget, int) and budget > 0:
-                    extra_body["thinking_budget"] = budget
-            elif reasoning_effort is not None and reasoning_effort != "none":
-                extra_body["enable_thinking"] = True
-                extra_body["thinking_budget"] = _THINKING_BUDGET_MAP.get(
-                    reasoning_effort, _THINKING_BUDGET_MAP["medium"]
-                )
+        user_disabled_thinking = False
+        if (
+            isinstance(thinking_value, dict)
+            and thinking_value.get("type") == "disabled"
+        ):
+            user_disabled_thinking = True
+        elif reasoning_effort == "none":
+            user_disabled_thinking = True
+
+        if is_coder_model:
+            pass
+        elif user_disabled_thinking:
+            extra_body["enable_thinking"] = False
+        elif (
+            isinstance(thinking_value, dict)
+            and thinking_value.get("type") == "enabled"
+        ):
+            extra_body["enable_thinking"] = True
+            budget = thinking_value.get("budget_tokens")
+            if isinstance(budget, int) and budget > 0:
+                extra_body["thinking_budget"] = budget
+        elif reasoning_effort is not None:
+            extra_body["enable_thinking"] = True
+            extra_body["thinking_budget"] = _THINKING_BUDGET_MAP.get(
+                reasoning_effort, _THINKING_BUDGET_MAP["medium"]
+            )
+
+        thinking_active = extra_body.get(
+            "enable_thinking", has_default_thinking
+        ) and not is_coder_model
 
         web_search_options = optional_params.pop("web_search_options", None)
         if isinstance(web_search_options, dict):
@@ -103,10 +120,11 @@ class AlibabaChatConfig(OpenAIGPTConfig):
                 "enable_code_interpreter"
             )
 
-        # Thinking mode cannot force a specific function call on DashScope.
-        if extra_body.get("enable_thinking") is True:
+        # DashScope rejects all tool_choice values except "auto" and "none"
+        # when thinking mode is active.
+        if thinking_active:
             tool_choice = optional_params.get("tool_choice")
-            if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+            if tool_choice is not None and tool_choice not in ("auto", "none"):
                 optional_params.pop("tool_choice", None)
 
         return optional_params
