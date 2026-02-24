@@ -8259,12 +8259,6 @@ class ProviderConfigManager:
             )
 
             return MinimaxMessagesConfig()
-        elif litellm.LlmProviders.ALIBABA == provider:
-            from litellm.llms.alibaba.messages.transformation import (
-                AlibabaMessagesConfig,
-            )
-
-            return AlibabaMessagesConfig()
         return None
 
     @staticmethod
