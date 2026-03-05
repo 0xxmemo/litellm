@@ -8173,6 +8173,10 @@ class ProviderConfigManager:
             return litellm.GigaChatEmbeddingConfig()
         elif litellm.LlmProviders.HOSTED_VLLM == provider:
             return litellm.HostedVLLMEmbeddingConfig()
+        elif litellm.LlmProviders.LOCAL == provider:
+            from litellm.llms.local.embedding.transformation import LocalEmbeddingConfig
+
+            return LocalEmbeddingConfig()
         elif litellm.LlmProviders.SAGEMAKER == provider:
             from litellm.llms.sagemaker.embedding.transformation import (
                 SagemakerEmbeddingConfig,
@@ -8287,6 +8291,12 @@ class ProviderConfigManager:
             )
 
             return HostedVLLMAudioTranscriptionConfig()
+        elif litellm.LlmProviders.LOCAL == provider:
+            from litellm.llms.local.transcription.transformation import (
+                LocalTranscriptionConfig,
+            )
+
+            return LocalTranscriptionConfig()
         elif litellm.LlmProviders.WATSONX == provider:
             from litellm.llms.watsonx.audio_transcription.transformation import (
                 IBMWatsonXAudioTranscriptionConfig,
