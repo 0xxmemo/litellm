@@ -22,7 +22,7 @@ _THINKING_BUDGET_MAP = {
     "high": 10_000,
 }
 _CODER_PATTERN = re.compile(r"coder", re.IGNORECASE)
-_DEFAULT_THINKING_MODELS = re.compile(r"qwen3\.5", re.IGNORECASE)
+_DEFAULT_THINKING_MODELS = re.compile(r"qwen3\.5|qwen3-max", re.IGNORECASE)
 _SEARCH_OPTION_KEYS = {
     "forced_search",
     "search_strategy",
