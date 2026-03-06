@@ -12400,6 +12400,224 @@ async def schedule_model_cost_map_reload(
         )
 
 
+#### LIVE CONFIG EDIT ####
+
+
+@router.get(
+    "/config",
+    tags=["config.yaml"],
+    dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
+)
+async def get_live_config(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    Get the current in-memory config state.
+
+    Returns the current configuration loaded in memory without reloading from disk/DB.
+    """
+    # Check if user is admin
+    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied. Admin role required. Current role: {user_api_key_dict.user_role}",
+        )
+
+    try:
+        config = proxy_config.get_config_state()
+        return config
+    except Exception as e:
+        verbose_proxy_logger.exception(f"Error getting config: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get config: {str(e)}"
+        )
+
+
+class ConfigUpdateRequest(BaseModel):
+    """Request model for updating config"""
+    config: Dict[str, Any]
+    save_to_file: bool = False
+    update_router: bool = True  # Also update the llm_router with new models
+
+
+@router.put(
+    "/config",
+    tags=["config.yaml"],
+    dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
+)
+async def put_live_config(
+    request: ConfigUpdateRequest,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    Replace the entire config in memory.
+
+    Validates the config before applying. Optionally saves to the config file.
+    """
+    # Check if user is admin
+    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied. Admin role required. Current role: {user_api_key_dict.user_role}",
+        )
+
+    try:
+        # Validate the config using ConfigYAML model
+        validated_config = ConfigYAML(**request.config)
+
+        # Update in-memory state
+        proxy_config.update_config_state(config=request.config)
+
+        # Update global llm_model_list if model_list is in config
+        global llm_model_list, llm_router
+        if "model_list" in request.config:
+            llm_model_list = request.config.get("model_list", [])
+
+        # Update router if requested and router exists
+        if request.update_router and llm_router is not None and "model_list" in request.config:
+            from litellm import Deployment
+            from litellm.router import LiteLLM_Params
+
+            added_count = 0
+            for m in request.config.get("model_list", []):
+                model_name = m.get("model_name")
+                litellm_params_dict = m.get("litellm_params", {})
+                model_info = m.get("model_info", {})
+
+                # Convert litellm_params to LiteLLM_Params
+                _litellm_params = LiteLLM_Params(**litellm_params_dict)
+
+                # Ensure model_info is a dict (not a ModelInfo object)
+                if hasattr(model_info, "dict"):
+                    model_info = model_info.dict() if hasattr(model_info, "model_dump") else model_info.dict()
+
+                # Create deployment and add to router
+                deployment = Deployment(
+                    model_name=model_name,
+                    litellm_params=_litellm_params,
+                    model_info=model_info,
+                )
+                added = llm_router.upsert_deployment(deployment=deployment)
+                if added is not None:
+                    added_count += 1
+
+            verbose_proxy_logger.info(f"Added {added_count} models to router")
+
+        # Optionally save to file
+        if request.save_to_file:
+            await proxy_config.save_config(new_config=request.config)
+
+        return {
+            "status": "success",
+            "message": "Config updated in memory",
+            "saved_to_file": request.save_to_file,
+            "router_updated": request.update_router and llm_router is not None,
+        }
+    except Exception as e:
+        verbose_proxy_logger.exception(f"Error updating config: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Config validation failed: {str(e)}"
+        )
+
+
+@router.patch(
+    "/config",
+    tags=["config.yaml"],
+    dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
+)
+async def patch_live_config(
+    request: ConfigUpdateRequest,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    Partially update the config in memory (merge with existing config).
+
+    Validates the merged config before applying. Optionally saves to the config file.
+    """
+    # Check if user is admin
+    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied. Admin role required. Current role: {user_api_key_dict.user_role}",
+        )
+
+    try:
+        # Get current config
+        current_config = proxy_config.get_config_state()
+
+        # Deep merge the updates into current config
+        def deep_merge(base: dict, updates: dict) -> dict:
+            """Recursively merge updates into base dict"""
+            result = copy.deepcopy(base)
+            for key, value in updates.items():
+                if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                    result[key] = deep_merge(result[key], value)
+                else:
+                    result[key] = copy.deepcopy(value)
+            return result
+
+        merged_config = deep_merge(current_config, request.config)
+
+        # Validate the merged config using ConfigYAML model
+        validated_config = ConfigYAML(**merged_config)
+
+        # Update in-memory state
+        proxy_config.update_config_state(config=merged_config)
+
+        # Update global llm_model_list if model_list changed
+        global llm_model_list, llm_router
+        if "model_list" in request.config or "model_list" in merged_config:
+            llm_model_list = merged_config.get("model_list", [])
+
+        # Update router if requested and model_list changed
+        if request.update_router and llm_router is not None and "model_list" in merged_config:
+            from litellm.router import Deployment
+
+            added_count = 0
+            for m in merged_config.get("model_list", []):
+                model_name = m.get("model_name")
+                litellm_params_dict = m.get("litellm_params", {})
+                model_info = m.get("model_info", {})
+
+                # Convert litellm_params to LiteLLM_Params
+                _litellm_params = LiteLLM_Params(**litellm_params_dict)
+
+                # Ensure model_info is a dict (not a ModelInfo object)
+                if hasattr(model_info, "dict"):
+                    model_info = model_info.dict() if hasattr(model_info, "model_dump") else model_info.dict()
+
+                # Create deployment and add to router
+                deployment = Deployment(
+                    model_name=model_name,
+                    litellm_params=_litellm_params,
+                    model_info=model_info,
+                )
+                added = llm_router.upsert_deployment(deployment=deployment)
+                if added is not None:
+                    added_count += 1
+
+            verbose_proxy_logger.info(f"Added {added_count} models to router")
+
+        # Optionally save to file
+        if request.save_to_file:
+            await proxy_config.save_config(new_config=merged_config)
+
+        return {
+            "status": "success",
+            "message": "Config updated in memory",
+            "saved_to_file": request.save_to_file,
+            "router_updated": request.update_router and llm_router is not None,
+        }
+    except Exception as e:
+        verbose_proxy_logger.exception(f"Error patching config: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Config validation failed: {str(e)}"
+        )
+
+
 @router.delete(
     "/schedule/model_cost_map_reload",
     tags=["model management"],
