@@ -12618,6 +12618,87 @@ async def patch_live_config(
         )
 
 
+@router.post(
+    "/config/reset",
+    tags=["config.yaml"],
+    dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
+)
+async def reset_config_to_file(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    Reset config to the on-disk YAML file by clearing DB-stored overrides.
+
+    Deletes all rows from LiteLLM_Config (router_settings, litellm_settings,
+    general_settings, environment_variables) so the next load cycle reads
+    exclusively from the YAML config file.  After the DB rows are removed the
+    config is reloaded from disk and applied to the running router.
+    """
+    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied. Admin role required. Current role: {user_api_key_dict.user_role}",
+        )
+
+    global prisma_client, llm_model_list, llm_router
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=500, detail="Database connection not available"
+        )
+
+    try:
+        # 1. Delete all config overrides from the DB
+        deleted = await prisma_client.db.litellm_config.delete_many()
+        verbose_proxy_logger.info(
+            f"reset_config_to_file: deleted {deleted} rows from LiteLLM_Config"
+        )
+
+        # 2. Reload config from the YAML file (DB rows are now gone)
+        config = await proxy_config.get_config()
+
+        # 3. Rebuild the router with the file-based config
+        if llm_router is not None and "model_list" in config:
+            llm_model_list = config.get("model_list", [])
+
+            from litellm import Deployment
+            from litellm.router import LiteLLM_Params
+
+            added_count = 0
+            for m in llm_model_list:
+                model_name = m.get("model_name")
+                litellm_params_dict = m.get("litellm_params", {})
+                model_info = m.get("model_info", {})
+
+                if hasattr(model_info, "dict"):
+                    model_info = model_info.model_dump() if hasattr(model_info, "model_dump") else model_info.dict()
+
+                deployment = Deployment(
+                    model_name=model_name,
+                    litellm_params=LiteLLM_Params(**litellm_params_dict),
+                    model_info=model_info,
+                )
+                added = llm_router.upsert_deployment(deployment=deployment)
+                if added is not None:
+                    added_count += 1
+
+            verbose_proxy_logger.info(
+                f"reset_config_to_file: reloaded {added_count} models from YAML"
+            )
+
+        return {
+            "status": "success",
+            "message": f"Config reset to file defaults. Cleared {deleted} DB overrides, reloaded from YAML.",
+            "deleted_db_rows": deleted,
+        }
+    except Exception as e:
+        verbose_proxy_logger.exception(f"Error resetting config: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to reset config: {str(e)}"
+        )
+
+
 @router.delete(
     "/schedule/model_cost_map_reload",
     tags=["model management"],
