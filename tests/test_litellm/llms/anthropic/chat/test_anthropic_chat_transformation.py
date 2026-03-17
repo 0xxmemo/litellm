@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 
@@ -13,7 +12,7 @@ from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 from litellm.llms.anthropic.experimental_pass_through.messages.transformation import (
     AnthropicMessagesConfig,
 )
-from litellm.types.utils import PromptTokensDetailsWrapper, ServerToolUse
+from litellm.types.utils import ServerToolUse
 
 
 def test_response_format_transformation_unit_test():
@@ -1833,8 +1832,12 @@ def test_get_max_tokens_for_model_claude_35():
     config = AnthropicConfig()
 
     # Claude 3.5 Sonnet should return 8192
-    max_tokens = config.get_max_tokens_for_model("claude-3-5-sonnet-20241022")
-    assert max_tokens == 8192
+    with patch(
+        "litellm.llms.anthropic.chat.transformation.get_max_tokens",
+        return_value=8192,
+    ):
+        max_tokens = config.get_max_tokens_for_model("claude-3-5-sonnet-20241022")
+        assert max_tokens == 8192
 
 
 def test_get_max_tokens_for_model_claude_37():
@@ -1880,17 +1883,34 @@ def test_get_config_with_model_uses_dynamic_max_tokens():
 
     Fixes: https://github.com/BerriAI/litellm/issues/8835
     """
-    # Claude 3 model should get 4096
-    config_claude3 = AnthropicConfig.get_config(model="claude-3-sonnet-20240229")
-    assert config_claude3["max_tokens"] == 4096
 
-    # Claude 3.5 model should get 8192
-    config_claude35 = AnthropicConfig.get_config(model="claude-3-5-sonnet-20241022")
-    assert config_claude35["max_tokens"] == 8192
+    def _mock_get_max_tokens(model):
+        """Return expected max_output_tokens for each model."""
+        model_map = {
+            "claude-3-sonnet-20240229": 4096,
+            "claude-3-5-sonnet-20241022": 8192,
+            "claude-3-7-sonnet-20250219": 64000,
+        }
+        result = model_map.get(model)
+        if result is None:
+            raise Exception(f"Model {model} not found")
+        return result
 
-    # Claude 3.7 model should get 64000 (64K default, 128K requires beta header)
-    config_claude37 = AnthropicConfig.get_config(model="claude-3-7-sonnet-20250219")
-    assert config_claude37["max_tokens"] == 64000
+    with patch(
+        "litellm.llms.anthropic.chat.transformation.get_max_tokens",
+        side_effect=_mock_get_max_tokens,
+    ):
+        # Claude 3 model should get 4096
+        config_claude3 = AnthropicConfig.get_config(model="claude-3-sonnet-20240229")
+        assert config_claude3["max_tokens"] == 4096
+
+        # Claude 3.5 model should get 8192
+        config_claude35 = AnthropicConfig.get_config(model="claude-3-5-sonnet-20241022")
+        assert config_claude35["max_tokens"] == 8192
+
+        # Claude 3.7 model should get 64000 (64K default, 128K requires beta header)
+        config_claude37 = AnthropicConfig.get_config(model="claude-3-7-sonnet-20250219")
+        assert config_claude37["max_tokens"] == 64000
 
 
 def test_get_config_without_model_uses_fallback():
@@ -1912,16 +1932,16 @@ def test_transform_request_uses_dynamic_max_tokens():
 
     messages = [{"role": "user", "content": "Hello"}]
 
-    # Claude 3.5 model should get 8192 as default max_tokens
+    # Claude 3.7 model should get 64000 as default max_tokens (from model_prices_and_context_window.json)
     result = config.transform_request(
-        model="claude-3-5-sonnet-20241022",
+        model="claude-3-7-sonnet-20250219",
         messages=messages,
         optional_params={},  # No max_tokens provided
         litellm_params={},
         headers={}
     )
 
-    assert result["max_tokens"] == 8192
+    assert result["max_tokens"] == 64000
 
 
 def test_transform_request_respects_user_max_tokens():
@@ -1935,7 +1955,7 @@ def test_transform_request_respects_user_max_tokens():
 
     # User provides explicit max_tokens=1000, should not be overridden
     result = config.transform_request(
-        model="claude-3-5-sonnet-20241022",
+        model="claude-3-7-sonnet-20250219",
         messages=messages,
         optional_params={"max_tokens": 1000},
         litellm_params={},
@@ -1964,7 +1984,7 @@ def test_calculate_usage_completion_tokens_details_always_populated():
 
     # completion_tokens_details should NOT be None
     assert usage.completion_tokens_details is not None
-    assert usage.completion_tokens_details.reasoning_tokens is 0
+    assert usage.completion_tokens_details.reasoning_tokens == 0
     assert usage.completion_tokens_details.text_tokens == 248
     assert usage.completion_tokens == 248
     assert usage.prompt_tokens == 37
@@ -2861,6 +2881,83 @@ def test_map_openai_params_with_context_management():
     assert result["context_management"] == non_default_params_anthropic["context_management"]
 
 
+def test_cache_control_in_supported_params():
+    """
+    Test that cache_control is listed as a supported OpenAI param for Anthropic.
+    """
+    config = AnthropicConfig()
+    params = config.get_supported_openai_params(model="claude-sonnet-4-20250514")
+    assert "cache_control" in params
+
+
+def test_map_openai_params_with_cache_control():
+    """
+    Test that map_openai_params correctly passes through top-level cache_control
+    for Anthropic's automatic prompt caching.
+    """
+    config = AnthropicConfig()
+
+    non_default_params = {
+        "cache_control": {"type": "ephemeral"}
+    }
+    optional_params = {}
+
+    result = config.map_openai_params(
+        non_default_params=non_default_params,
+        optional_params=optional_params,
+        model="claude-sonnet-4-20250514",
+        drop_params=False,
+    )
+
+    assert "cache_control" in result
+    assert result["cache_control"] == {"type": "ephemeral"}
+
+
+def test_map_openai_params_cache_control_ignored_when_not_dict():
+    """
+    Test that cache_control is ignored when it is not a dict.
+    """
+    config = AnthropicConfig()
+
+    non_default_params = {
+        "cache_control": "ephemeral"
+    }
+    optional_params = {}
+
+    result = config.map_openai_params(
+        non_default_params=non_default_params,
+        optional_params=optional_params,
+        model="claude-sonnet-4-20250514",
+        drop_params=False,
+    )
+
+    assert "cache_control" not in result
+
+
+def test_transform_request_includes_cache_control():
+    """
+    Test that transform_request includes top-level cache_control in the request body.
+    """
+    config = AnthropicConfig()
+
+    messages = [{"role": "user", "content": "Hello"}]
+    optional_params = {
+        "max_tokens": 100,
+        "cache_control": {"type": "ephemeral"},
+    }
+
+    result = config.transform_request(
+        model="claude-sonnet-4-20250514",
+        messages=messages,
+        optional_params=optional_params,
+        litellm_params={},
+        headers={},
+    )
+
+    assert "cache_control" in result
+    assert result["cache_control"] == {"type": "ephemeral"}
+
+
 def test_compaction_block_empty_list_not_added():
     """
     Test that empty compaction_blocks list is not added to provider_specific_fields.
@@ -2975,7 +3072,6 @@ def test_fast_mode_cost_calculation():
     Test that fast mode applies the 'fast' multiplier from provider_specific_entry
     on top of the base model cost (1.1x for claude-opus-4-6).
     """
-    from unittest.mock import MagicMock, patch
 
     from litellm.llms.anthropic.cost_calculation import cost_per_token
     from litellm.types.utils import Usage
@@ -3015,7 +3111,6 @@ def test_fast_mode_with_inference_geo():
     Test that fast mode + inference_geo both apply their multipliers from
     provider_specific_entry (1.1 * 1.1 = 1.21x for claude-opus-4-6).
     """
-    from unittest.mock import patch
 
     from litellm.llms.anthropic.cost_calculation import cost_per_token
     from litellm.types.utils import Usage
@@ -3101,3 +3196,394 @@ def test_map_openai_params_max_tokens_normalized_to_int():
 
     assert "max_tokens" in result
     assert result["max_tokens"] == 1
+
+
+# ========================================================================
+# Tool schema normalization tests
+# ========================================================================
+
+
+def test_map_tool_helper_enforces_object_type_when_missing():
+    """
+    Anthropic requires input_schema.type to be "object". When an OpenAI tool
+    has parameters without a 'type' field (common with MCP servers), LiteLLM
+    should inject type:"object" before forwarding to Anthropic.
+
+    Without this fix, Anthropic rejects with:
+        tools.N.custom.input_schema.type: Input should be 'object'
+    """
+    config = AnthropicConfig()
+
+    # Tool with parameters that has properties but no 'type' field
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "search_code",
+            "description": "Search for code patterns",
+            "parameters": {
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"}
+                },
+                "required": ["query"],
+            },
+        },
+    }
+
+    original_params = tool["function"]["parameters"].copy()
+    result, _ = config._map_tool_helper(tool)
+    assert result is not None
+    assert result["input_schema"]["type"] == "object"
+    assert "properties" in result["input_schema"]
+    assert "query" in result["input_schema"]["properties"]
+    # Original parameters dict must not be modified in place
+    assert tool["function"]["parameters"] == original_params, (
+        "parameters dict was mutated; _map_tool_helper should not modify caller data"
+    )
+
+
+def test_map_tool_helper_enforces_object_type_when_wrong_type():
+    """
+    If a tool schema has type:"string" or type:"array" at the root level,
+    LiteLLM should normalize it to type:"object" for Anthropic compatibility.
+    """
+    config = AnthropicConfig()
+
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "echo",
+            "description": "Echo input",
+            "parameters": {
+                "type": "string",
+                "description": "The input to echo",
+            },
+        },
+    }
+
+    original_params = tool["function"]["parameters"].copy()
+    result, _ = config._map_tool_helper(tool)
+    assert result is not None
+    assert result["input_schema"]["type"] == "object"
+    assert result["input_schema"].get("properties") == {}, (
+        "properties should be injected as {} when schema has non-object type and no properties key"
+    )
+    # Original parameters dict must not be modified in place
+    assert tool["function"]["parameters"] == original_params, (
+        "parameters dict was mutated; _map_tool_helper should not modify caller data"
+    )
+
+
+def test_map_tool_helper_preserves_valid_object_schema():
+    """
+    When a tool schema already has type:"object", it should be preserved
+    without modification.
+    """
+    config = AnthropicConfig()
+
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string"},
+                },
+                "required": ["city"],
+            },
+        },
+    }
+
+    result, _ = config._map_tool_helper(tool)
+    assert result is not None
+    assert result["input_schema"]["type"] == "object"
+    assert "city" in result["input_schema"]["properties"]
+    assert result["input_schema"]["required"] == ["city"]
+
+
+def test_map_tool_helper_empty_parameters_get_default():
+    """
+    When parameters is entirely missing, the existing default should still
+    produce a valid {type:"object", properties:{}} schema.
+    """
+    config = AnthropicConfig()
+
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "no_params_tool",
+            "description": "Tool with no parameters",
+        },
+    }
+
+    result, _ = config._map_tool_helper(tool)
+    assert result is not None
+    assert result["input_schema"]["type"] == "object"
+    assert result["input_schema"].get("properties") == {}
+
+MOCK_WEB_SEARCH_RESULT_LOCATION_CITATION = {
+    "type": "web_search_result_location",
+    "cited_text": "The Sony WH-1000XM5 remains one of the best...",
+    "url": "https://example.com/headphones",
+    "title": "Best Headphones 2025",
+}
+
+MOCK_CHAR_LOCATION_CITATION = {
+    "type": "char_location",
+    "cited_text": "The grass is green.",
+    "document_index": 0,
+    "document_title": "My Document",
+    "start_char_index": 0,
+    "end_char_index": 20,
+}
+
+MOCK_PAGE_LOCATION_CITATION = {
+    "type": "page_location",
+    "cited_text": "Chapter introduction.",
+    "document_index": 1,
+    "document_title": "User Manual",
+    "start_page_number": 3,
+    "end_page_number": 5,
+}
+
+MOCK_CHAR_LOCATION_CITATION_NO_TITLE = {
+    "type": "char_location",
+    "cited_text": "Some text.",
+    "document_index": 0,
+    "start_char_index": 0,
+    "end_char_index": 10,
+}
+
+MOCK_CITATION_WITH_SUPPORTED_TEXT = {
+    **MOCK_WEB_SEARCH_RESULT_LOCATION_CITATION,
+    "supported_text": "Based on current reviews...",
+}
+
+
+def test_web_search_result_location_citation_to_annotation():
+    config = AnthropicConfig()
+    result = config._translate_anthropic_citation_to_openai_annotation(
+        MOCK_WEB_SEARCH_RESULT_LOCATION_CITATION
+    )
+    assert result is not None
+    assert result["type"] == "url_citation"
+    assert result["url_citation"]["url"] == "https://example.com/headphones"
+    assert result["url_citation"]["title"] == "Best Headphones 2025"
+    assert "start_index" not in result["url_citation"]
+    assert "end_index" not in result["url_citation"]
+
+
+def test_char_location_citation_to_annotation():
+    config = AnthropicConfig()
+    result = config._translate_anthropic_citation_to_openai_annotation(
+        MOCK_CHAR_LOCATION_CITATION
+    )
+    assert result is None
+
+
+def test_page_location_citation_to_annotation():
+    config = AnthropicConfig()
+    result = config._translate_anthropic_citation_to_openai_annotation(
+        MOCK_PAGE_LOCATION_CITATION
+    )
+    assert result is None
+
+
+def test_mixed_citation_types_batch_conversion():
+    config = AnthropicConfig()
+    citations = [
+        [MOCK_WEB_SEARCH_RESULT_LOCATION_CITATION],
+        [MOCK_CHAR_LOCATION_CITATION, MOCK_PAGE_LOCATION_CITATION],
+    ]
+    result = config._translate_anthropic_citations_to_openai_annotations(citations)
+    assert result is not None
+    assert len(result) == 1  # Only web_search_result_location survives
+    assert result[0]["url_citation"]["url"] == "https://example.com/headphones"
+
+
+def test_unknown_citation_type_skipped():
+    config = AnthropicConfig()
+    unknown = {"type": "future_type", "data": "something"}
+    citations = [[unknown, MOCK_WEB_SEARCH_RESULT_LOCATION_CITATION]]
+    result = config._translate_anthropic_citations_to_openai_annotations(citations)
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["url_citation"]["url"] == "https://example.com/headphones"
+
+
+def test_citations_none_empty_cases():
+    config = AnthropicConfig()
+    assert config._translate_anthropic_citations_to_openai_annotations(None) is None
+    assert config._translate_anthropic_citations_to_openai_annotations([]) is None
+    assert config._translate_anthropic_citations_to_openai_annotations([[]]) is None
+    # Mixed empty and valid
+    result = config._translate_anthropic_citations_to_openai_annotations(
+        [[], [MOCK_WEB_SEARCH_RESULT_LOCATION_CITATION]]
+    )
+    assert result is not None
+    assert len(result) == 1
+
+
+def test_document_title_none_produces_none_for_char_location():
+    """char_location citations are skipped regardless of document_title presence."""
+    config = AnthropicConfig()
+    result = config._translate_anthropic_citation_to_openai_annotation(
+        MOCK_CHAR_LOCATION_CITATION_NO_TITLE
+    )
+    assert result is None
+
+
+def test_supported_text_not_in_annotation():
+    config = AnthropicConfig()
+    result = config._translate_anthropic_citation_to_openai_annotation(
+        MOCK_CITATION_WITH_SUPPORTED_TEXT
+    )
+    assert result is not None
+    url_citation = result["url_citation"]
+    assert "supported_text" not in url_citation
+    assert url_citation["url"] == "https://example.com/headphones"
+
+
+def test_backward_compat_provider_specific_fields_and_annotations():
+    import httpx
+    from litellm.types.utils import ModelResponse
+
+    config = AnthropicConfig()
+    completion_response = {
+        "id": "msg_01ABC123",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-haiku-4-5-20251001",
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        },
+        "content": [
+            {
+                "type": "text",
+                "text": "Based on reviews, Sony WH-1000XM5 is recommended.",
+                "citations": [
+                    {
+                        "type": "web_search_result_location",
+                        "cited_text": "Sony...",
+                        "url": "https://example.com/headphones",
+                        "title": "Best Headphones 2025",
+                    }
+                ],
+            }
+        ],
+    }
+    mock_response = httpx.Response(
+        status_code=200,
+        json=completion_response,
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+    )
+    model_response = ModelResponse()
+    config.transform_parsed_response(
+        completion_response=completion_response,
+        raw_response=mock_response,
+        model_response=model_response,
+    )
+    message = model_response.choices[0].message
+    assert message.provider_specific_fields is not None
+    assert message.provider_specific_fields["citations"] is not None
+    assert message.annotations is not None
+    assert len(message.annotations) == 1
+    assert message.annotations[0]["type"] == "url_citation"
+    assert (
+        message.annotations[0]["url_citation"]["url"]
+        == "https://example.com/headphones"
+    )
+
+
+def test_streaming_message_delta_batch_emit():
+    from litellm.llms.anthropic.chat.handler import ModelResponseIterator
+
+    iterator = ModelResponseIterator(streaming_response=iter([]), sync_stream=True)
+
+    content_block_1 = {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+            "type": "citations",
+            "citation": {
+                "type": "web_search_result_location",
+                "cited_text": "Sony...",
+                "url": "https://example.com/1",
+                "title": "Title 1",
+            },
+        },
+    }
+    content_block_2 = {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+            "type": "citations",
+            "citation": {
+                "type": "web_search_result_location",
+                "cited_text": "Bose...",
+                "url": "https://example.com/2",
+                "title": "Title 2",
+            },
+        },
+    }
+
+    iterator._content_block_delta_helper(content_block_1)
+    iterator._content_block_delta_helper(content_block_2)
+    assert len(iterator._accumulated_annotations) == 2
+
+    message_delta_chunk = {
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": 50},
+    }
+    result = iterator.chunk_parser(message_delta_chunk)
+    delta = result.choices[0].delta
+    assert hasattr(delta, "annotations") and delta.annotations is not None
+    assert len(delta.annotations) == 2
+    assert delta.annotations[0]["url_citation"]["url"] == "https://example.com/1"
+    assert delta.annotations[1]["url_citation"]["url"] == "https://example.com/2"
+    assert len(iterator._accumulated_annotations) == 0
+
+
+def test_streaming_annotation_drain_in_common_done_event_logic():
+    """Verify that annotations queued during streaming are fully drained at end-of-stream."""
+    from litellm.llms.anthropic.chat.handler import ModelResponseIterator
+
+    iterator = ModelResponseIterator(streaming_response=iter([]), sync_stream=True)
+
+    for i in range(4):
+        content_block = {
+            "type": "content_block_delta",
+            "index": 2,
+            "delta": {
+                "type": "citations",
+                "citation": {
+                    "type": "web_search_result_location",
+                    "cited_text": f"Text {i}",
+                    "url": f"https://example.com/{i}",
+                    "title": f"Title {i}",
+                },
+            },
+        }
+        iterator._content_block_delta_helper(content_block)
+
+    assert len(iterator._accumulated_annotations) == 4
+
+    message_delta_chunk = {
+        "type": "message_delta",
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": 50},
+    }
+    result = iterator.chunk_parser(message_delta_chunk)
+    delta = result.choices[0].delta
+    assert hasattr(delta, "annotations") and delta.annotations is not None
+    assert len(delta.annotations) == 4
+    for i in range(4):
+        assert delta.annotations[i]["url_citation"]["url"] == f"https://example.com/{i}"
+    assert len(iterator._accumulated_annotations) == 0

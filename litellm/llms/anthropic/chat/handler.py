@@ -40,6 +40,7 @@ from litellm.types.llms.anthropic import (
     UsageDelta,
 )
 from litellm.types.llms.openai import (
+    ChatCompletionAnnotation,
     ChatCompletionRedactedThinkingBlock,
     ChatCompletionThinkingBlock,
     ChatCompletionToolCallChunk,
@@ -165,7 +166,10 @@ def make_sync_call(
         )
 
     completion_stream = ModelResponseIterator(
-        streaming_response=response.iter_lines(), sync_stream=True, json_mode=json_mode, speed=speed
+        streaming_response=response.iter_lines(),
+        sync_stream=True,
+        json_mode=json_mode,
+        speed=speed,
     )
 
     # LOGGING
@@ -497,7 +501,11 @@ class AnthropicChatCompletion(BaseLLM):
 
 class ModelResponseIterator:
     def __init__(
-        self, streaming_response, sync_stream: bool, json_mode: Optional[bool] = False, speed: Optional[str] = None
+        self,
+        streaming_response,
+        sync_stream: bool,
+        json_mode: Optional[bool] = False,
+        speed: Optional[str] = None,
     ):
         self.streaming_response = streaming_response
         self.response_iterator = self.streaming_response
@@ -525,9 +533,11 @@ class ModelResponseIterator:
         # Accumulate web_search_tool_result blocks for multi-turn reconstruction
         # See: https://github.com/BerriAI/litellm/issues/17737
         self.web_search_results: List[Dict[str, Any]] = []
-        
+
         # Accumulate compaction blocks for multi-turn reconstruction
         self.compaction_blocks: List[Dict[str, Any]] = []
+
+        self._accumulated_annotations: List[ChatCompletionAnnotation] = []
 
     def check_empty_tool_call_args(self) -> bool:
         """
@@ -554,10 +564,14 @@ class ModelResponseIterator:
 
     def _handle_usage(self, anthropic_usage_chunk: Union[dict, UsageDelta]) -> Usage:
         return AnthropicConfig().calculate_usage(
-            usage_object=cast(dict, anthropic_usage_chunk), reasoning_content=None, speed=self.speed
+            usage_object=cast(dict, anthropic_usage_chunk),
+            reasoning_content=None,
+            speed=self.speed,
         )
 
-    def _content_block_delta_helper(self, chunk: dict) -> Tuple[
+    def _content_block_delta_helper(
+        self, chunk: dict
+    ) -> Tuple[
         str,
         Optional[ChatCompletionToolCallChunk],
         List[Union[ChatCompletionThinkingBlock, ChatCompletionRedactedThinkingBlock]],
@@ -596,6 +610,13 @@ class ModelResponseIterator:
                 )
         elif "citation" in content_block["delta"]:
             provider_specific_fields["citation"] = content_block["delta"]["citation"]
+            annotation = (
+                AnthropicConfig._translate_anthropic_citation_to_openai_annotation(
+                    content_block["delta"]["citation"]
+                )
+            )
+            if annotation is not None:
+                self._accumulated_annotations.append(annotation)
         elif (
             "thinking" in content_block["delta"]
             or "signature" in content_block["delta"]
@@ -608,11 +629,14 @@ class ModelResponseIterator:
                 )
             ]
             provider_specific_fields["thinking_blocks"] = thinking_blocks
-        elif "content" in content_block["delta"] and content_block["delta"].get("type") == "compaction_delta":
+        elif (
+            "content" in content_block["delta"]
+            and content_block["delta"].get("type") == "compaction_delta"
+        ):
             # Handle compaction delta
             provider_specific_fields["compaction_delta"] = {
                 "type": "compaction_delta",
-                "content": content_block["delta"]["content"]
+                "content": content_block["delta"]["content"],
             }
 
         return text, tool_use, thinking_blocks, provider_specific_fields
@@ -683,6 +707,7 @@ class ModelResponseIterator:
                     ]
                 ]
             ] = None
+            annotations_to_emit: Optional[List[ChatCompletionAnnotation]] = None
 
             # Always use index=0 for OpenAI choice format (fixes multi-choice errors)
             index = 0
@@ -710,10 +735,15 @@ class ModelResponseIterator:
                 content_block_start = self.get_content_block_start(chunk=chunk)
                 self.content_blocks = []  # reset content blocks when new block starts
                 # Track current content block type for filtering deltas
-                self.current_content_block_type = content_block_start["content_block"]["type"]
+                self.current_content_block_type = content_block_start["content_block"][
+                    "type"
+                ]
                 if content_block_start["content_block"]["type"] == "text":
                     text = content_block_start["content_block"]["text"]
-                elif content_block_start["content_block"]["type"] == "tool_use" or content_block_start["content_block"]["type"] == "server_tool_use":
+                elif (
+                    content_block_start["content_block"]["type"] == "tool_use"
+                    or content_block_start["content_block"]["type"] == "server_tool_use"
+                ):
                     self.tool_index += 1
                     # Use empty string for arguments in content_block_start - actual arguments
                     # come in subsequent content_block_delta chunks and get accumulated.
@@ -746,21 +776,23 @@ class ModelResponseIterator:
                 elif content_block_start["content_block"]["type"] == "compaction":
                     # Handle compaction blocks
                     # The full content comes in content_block_start
-                    self.compaction_blocks.append(
-                        content_block_start["content_block"]
-                    )
-                    provider_specific_fields["compaction_blocks"] = (
-                        self.compaction_blocks
-                    )
+                    self.compaction_blocks.append(content_block_start["content_block"])
+                    provider_specific_fields[
+                        "compaction_blocks"
+                    ] = self.compaction_blocks
                     provider_specific_fields["compaction_start"] = {
                         "type": "compaction",
-                        "content": content_block_start["content_block"].get("content", "")
+                        "content": content_block_start["content_block"].get(
+                            "content", ""
+                        ),
                     }
 
-                elif content_block_start["content_block"]["type"].endswith("_tool_result"):
+                elif content_block_start["content_block"]["type"].endswith(
+                    "_tool_result"
+                ):
                     # Handle all tool result types (web_search, bash_code_execution, text_editor, etc.)
                     content_type = content_block_start["content_block"]["type"]
-                    
+
                     # Special handling for web_search_tool_result for backwards compatibility
                     if content_type == "web_search_tool_result":
                         # Capture web_search_tool_result for multi-turn reconstruction
@@ -769,9 +801,9 @@ class ModelResponseIterator:
                         self.web_search_results.append(
                             content_block_start["content_block"]
                         )
-                        provider_specific_fields["web_search_results"] = (
-                            self.web_search_results
-                        )
+                        provider_specific_fields[
+                            "web_search_results"
+                        ] = self.web_search_results
                     elif content_type == "web_fetch_tool_result":
                         # Capture web_fetch_tool_result for multi-turn reconstruction
                         # The full content comes in content_block_start, not in deltas
@@ -779,9 +811,9 @@ class ModelResponseIterator:
                         self.web_search_results.append(
                             content_block_start["content_block"]
                         )
-                        provider_specific_fields["web_search_results"] = (
-                            self.web_search_results
-                        )
+                        provider_specific_fields[
+                            "web_search_results"
+                        ] = self.web_search_results
                     elif content_type != "tool_search_tool_result":
                         # Handle other tool results (code execution, etc.)
                         # Skip tool_search_tool_result as it's internal metadata
@@ -817,6 +849,9 @@ class ModelResponseIterator:
                 finish_reason, usage, container = self._handle_message_delta(chunk)
                 if container:
                     provider_specific_fields["container"] = container
+                if self._accumulated_annotations:
+                    annotations_to_emit = list(self._accumulated_annotations)
+                    self._accumulated_annotations = []
             elif type_chunk == "message_start":
                 """
                 Anthropic
@@ -871,6 +906,7 @@ class ModelResponseIterator:
                                 thinking_blocks if thinking_blocks else None
                             ),
                             reasoning_content=reasoning_content,
+                            annotations=annotations_to_emit,
                         ),
                         finish_reason=finish_reason,
                     )
@@ -932,7 +968,9 @@ class ModelResponseIterator:
 
         return text, tool_use
 
-    def _handle_message_delta(self, chunk: dict) -> Tuple[str, Optional[Usage], Optional[Dict[str, Any]]]:
+    def _handle_message_delta(
+        self, chunk: dict
+    ) -> Tuple[str, Optional[Usage], Optional[Dict[str, Any]]]:
         """
         Handle message_delta event for finish_reason, usage, and container.
 
@@ -1052,7 +1090,9 @@ class ModelResponseIterator:
             except StopIteration:
                 raise StopIteration
             except ValueError as e:
-                raise RuntimeError(f"Error parsing chunk: {e},\nReceived chunk: {chunk}")
+                raise RuntimeError(
+                    f"Error parsing chunk: {e},\nReceived chunk: {chunk}"
+                )
 
     # Async iterator
     def __aiter__(self):
@@ -1101,7 +1141,9 @@ class ModelResponseIterator:
             except StopAsyncIteration:
                 raise StopAsyncIteration
             except ValueError as e:
-                raise RuntimeError(f"Error parsing chunk: {e},\nReceived chunk: {chunk}")
+                raise RuntimeError(
+                    f"Error parsing chunk: {e},\nReceived chunk: {chunk}"
+                )
 
     def convert_str_chunk_to_generic_chunk(self, chunk: str) -> ModelResponseStream:
         """
