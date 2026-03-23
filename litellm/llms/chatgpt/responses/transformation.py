@@ -1,5 +1,5 @@
 import json
-from typing import Any, Optional
+from typing import Any, List, Optional, Union
 
 from litellm.constants import STREAM_SSE_DONE_STRING
 from litellm.exceptions import AuthenticationError
@@ -7,6 +7,7 @@ from litellm.litellm_core_utils.core_helpers import process_response_headers
 from litellm.litellm_core_utils.llm_response_utils.convert_dict_to_response import (
     _safe_convert_created_field,
 )
+from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.llms.openai.common_utils import OpenAIError
 from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
 from litellm.types.llms.openai import (
@@ -58,6 +59,76 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         )
         return {**default_headers, **headers}
 
+    def _extract_and_filter_system_messages(
+        self, input: Union[str, List[Any]]
+    ) -> tuple[Union[str, List[Any]], str]:
+        """Extract system messages from input and merge them into instructions for Codex models.
+
+        Returns:
+            tuple: (filtered_input, extracted_system_content)
+            - filtered_input: Input with system messages removed
+            - extracted_system_content: Combined system message content for instructions
+
+        The Responses API input format can contain:
+        - message objects with role="system" (not supported by Codex, merge to instructions)
+        - easy_input_message objects (contain system instructions, merge to instructions)
+        """
+        if isinstance(input, str):
+            return input, ""
+
+        if isinstance(input, list):
+            filtered_input = []
+            system_contents = []
+
+            for item in input:
+                if isinstance(item, dict):
+                    item_type = item.get("type")
+
+                    # Extract easy_input_message content for instructions
+                    if item_type == "easy_input_message":
+                        content = item.get("content", "")
+                        if content:
+                            system_contents.append(str(content))
+                        continue
+
+                    # Extract system message content for instructions
+                    if item_type == "message" and item.get("role") == "system":
+                        content_list = item.get("content", [])
+                        if isinstance(content_list, list):
+                            for c in content_list:
+                                if isinstance(c, dict) and c.get("type") == "input_text":
+                                    text = c.get("text", "")
+                                    if text:
+                                        system_contents.append(text)
+                                elif isinstance(c, str):
+                                    system_contents.append(c)
+                        elif isinstance(content_list, str):
+                            system_contents.append(content_list)
+                        continue
+
+                    # Handle message content - extract system-like text
+                    if isinstance(item.get("content"), list):
+                        filtered_content = []
+                        for c in item["content"]:
+                            if isinstance(c, dict) and c.get("type") == "input_text":
+                                text = c.get("text", "")
+                                # Extract system-like content for instructions
+                                if text.startswith("System:") or text.startswith("You are"):
+                                    system_contents.append(text)
+                                    continue
+                                filtered_content.append(c)
+                            else:
+                                filtered_content.append(c)
+                        item["content"] = filtered_content
+
+                    filtered_input.append(item)
+                else:
+                    filtered_input.append(item)
+
+            return filtered_input, "\n\n".join(system_contents)
+
+        return input, ""
+
     def transform_responses_api_request(
         self,
         model: str,
@@ -66,6 +137,11 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
     ) -> dict:
+        # For Codex models: extract system messages and merge into instructions
+        extracted_system_content = ""
+        if OpenAIGPT5Config.is_model_gpt_5_codex_model(model):
+            input, extracted_system_content = self._extract_and_filter_system_messages(input)
+
         request = super().transform_responses_api_request(
             model,
             input,
@@ -73,15 +149,30 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             litellm_params,
             headers,
         )
-        base_instructions = get_chatgpt_default_instructions()
-        existing_instructions = request.get("instructions")
-        if existing_instructions:
-            if base_instructions not in existing_instructions:
-                request[
-                    "instructions"
-                ] = f"{base_instructions}\n\n{existing_instructions}"
+
+        # Handle instructions for Codex vs non-Codex models
+        if OpenAIGPT5Config.is_model_gpt_5_codex_model(model):
+            # For Codex models: merge extracted system content into instructions
+            existing_instructions = request.get("instructions", "")
+            if extracted_system_content:
+                if existing_instructions:
+                    request["instructions"] = f"{extracted_system_content}\n\n{existing_instructions}"
+                else:
+                    request["instructions"] = extracted_system_content
+            elif not existing_instructions:
+                # Default minimal instruction if no system content provided
+                request["instructions"] = "You are a helpful coding assistant."
         else:
-            request["instructions"] = base_instructions
+            # For non-Codex models, add the default ChatGPT instructions
+            base_instructions = get_chatgpt_default_instructions()
+            existing_instructions = request.get("instructions")
+            if existing_instructions:
+                if base_instructions not in existing_instructions:
+                    request[
+                        "instructions"
+                    ] = f"{base_instructions}\n\n{existing_instructions}"
+            else:
+                request["instructions"] = base_instructions
         request["store"] = False
         request["stream"] = True
         include = list(request.get("include") or [])

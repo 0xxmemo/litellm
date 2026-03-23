@@ -1,6 +1,7 @@
 from typing import Any, List, Optional, Tuple
 
 from litellm.exceptions import AuthenticationError
+from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.llms.openai.openai import OpenAIConfig
 from litellm.types.llms.openai import AllMessageValues
 
@@ -77,3 +78,14 @@ class ChatGPTConfig(OpenAIConfig):
         )
         optional_params.setdefault("stream", False)
         return optional_params
+
+    def _transform_messages(
+        self, messages: List[AllMessageValues], model: str
+    ) -> List[AllMessageValues]:
+        """Filter out system messages for Codex models which don't support them."""
+        if OpenAIGPT5Config.is_model_gpt_5_codex_model(model):
+            # Codex models don't support system messages - filter them out
+            return [
+                msg for msg in messages if msg.get("role") != "system"
+            ]
+        return super()._transform_messages(messages, model)

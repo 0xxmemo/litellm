@@ -72,7 +72,7 @@ class OpenAIGPT5Config(OpenAIGPTConfig):
     @classmethod
     def is_model_gpt_5_codex_model(cls, model: str) -> bool:
         """Check if the model is specifically a GPT-5 Codex variant."""
-        return "gpt-5-codex" in model
+        return "gpt-5" in model and "codex" in model
 
     @classmethod
     def is_model_gpt_5_2_model(cls, model: str) -> bool:
