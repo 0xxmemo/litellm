@@ -24,10 +24,10 @@ from litellm.llms.custom_httpx.http_handler import (
     HTTPHandler,
     _get_httpx_client,
 )
+from litellm.llms.gemini.chat.transformation import GoogleAIStudioGeminiConfig
 from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import (
     ModelResponseIterator,
     VertexAIError,
-    VertexGeminiConfig,
 )
 from litellm.types.utils import ModelResponse
 from litellm.utils import CustomStreamWrapper
@@ -300,7 +300,13 @@ class GeminiCLIHandler:
         # 5. Wrap in Code Assist envelope
         data = _wrap_request(model, project_id, gemini_body)
 
-        # 6. Logging
+        # 6. Logging - update environment variables so optional_params (including tools)
+        # are available to transform_response for proper tool call handling
+        logging_obj.update_environment_variables(
+            model=model,
+            optional_params=optional_params,
+            litellm_params=litellm_params,
+        )
         logging_obj.pre_call(
             input=messages,
             api_key="",
@@ -404,7 +410,7 @@ class GeminiCLIHandler:
                 headers=None,
             )
 
-        return VertexGeminiConfig().transform_response(
+        return GoogleAIStudioGeminiConfig().transform_response(
             model=model,
             raw_response=_UnwrappingResponse(response),
             model_response=model_response,
@@ -460,7 +466,7 @@ class GeminiCLIHandler:
                 headers=None,
             )
 
-        return VertexGeminiConfig().transform_response(
+        return GoogleAIStudioGeminiConfig().transform_response(
             model=model,
             raw_response=_UnwrappingResponse(response),
             model_response=model_response,
