@@ -45,6 +45,8 @@ TOKEN_EXPIRY_BUFFER_SECONDS = 5 * 60
 OAUTH_CALLBACK_PORT = 8085
 OAUTH_REDIRECT_URI = f"http://localhost:{OAUTH_CALLBACK_PORT}/oauth2callback"
 OAUTH_TIMEOUT_SECONDS = 5 * 60
+OAUTH_CLIENT_ID_FIELD = "oauth_client_id"
+OAUTH_CLIENT_SECRET_FIELD = "oauth_client_secret"
 
 # Patterns to extract OAuth client credentials from the Gemini CLI binary
 CLIENT_ID_PATTERN = re.compile(r"\d+-[a-z0-9]+\.apps\.googleusercontent\.com")
@@ -79,11 +81,15 @@ class Authenticator:
             refresh_token = auth_data.get("refresh_token")
             if refresh_token:
                 try:
-                    refreshed = self._refresh_tokens(refresh_token)
+                    refreshed = self._refresh_tokens(refresh_token, auth_data=auth_data)
                     return refreshed["access_token"]
-                except RefreshAccessTokenError as exc:
+                except (RefreshAccessTokenError, GetAccessTokenError) as exc:
                     verbose_logger.warning(
                         "Gemini CLI refresh token failed, re-login required: %s", exc
+                    )
+                    raise GetAccessTokenError(
+                        message=str(exc),
+                        status_code=getattr(exc, "status_code", 401),
                     )
 
         raise GetAccessTokenError(
@@ -152,13 +158,16 @@ class Authenticator:
 
     # ── OAuth client credential resolution ──
 
-    def _resolve_oauth_credentials(self) -> tuple:
+    def _resolve_oauth_credentials(
+        self, auth_data: Optional[Dict[str, Any]] = None
+    ) -> tuple[str, str]:
         """
         Resolve OAuth client ID and secret.
 
         Strategy (in order):
         1. Environment variables
-        2. Extract from installed Gemini CLI binary
+        2. Stored auth file metadata
+        3. Extract from installed Gemini CLI binary
         """
         if self._client_id and self._client_secret:
             return self._client_id, self._client_secret
@@ -170,6 +179,14 @@ class Authenticator:
             self._client_id = client_id
             self._client_secret = client_secret
             return client_id, client_secret
+
+        stored_auth_data = auth_data or self._read_auth_file() or {}
+        stored_client_id = stored_auth_data.get(OAUTH_CLIENT_ID_FIELD)
+        stored_client_secret = stored_auth_data.get(OAUTH_CLIENT_SECRET_FIELD)
+        if stored_client_id and stored_client_secret:
+            self._client_id = stored_client_id
+            self._client_secret = stored_client_secret
+            return stored_client_id, stored_client_secret
 
         extracted = self._extract_credentials_from_cli()
         if extracted:
@@ -417,9 +434,11 @@ class Authenticator:
             "expires_in": expires_in,
         }
 
-    def _refresh_tokens(self, refresh_token: str) -> Dict[str, str]:
+    def _refresh_tokens(
+        self, refresh_token: str, auth_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, str]:
         """Refresh an expired access token."""
-        client_id, client_secret = self._resolve_oauth_credentials()
+        client_id, client_secret = self._resolve_oauth_credentials(auth_data=auth_data)
 
         try:
             client = _get_httpx_client()
@@ -455,11 +474,15 @@ class Authenticator:
         expires_in = data.get("expires_in", 3600)
         new_refresh = data.get("refresh_token", refresh_token)
 
-        auth_data = self._read_auth_file() or {}
-        auth_data["access_token"] = access_token
-        auth_data["refresh_token"] = new_refresh
-        auth_data["expires_at"] = time.time() + int(expires_in) - TOKEN_EXPIRY_BUFFER_SECONDS
-        self._write_auth_file(auth_data)
+        auth_record = {
+            **(auth_data or self._read_auth_file() or {}),
+            OAUTH_CLIENT_ID_FIELD: client_id,
+            OAUTH_CLIENT_SECRET_FIELD: client_secret,
+            "access_token": access_token,
+            "refresh_token": new_refresh,
+            "expires_at": time.time() + int(expires_in) - TOKEN_EXPIRY_BUFFER_SECONDS,
+        }
+        self._write_auth_file(auth_record)
 
         return {"access_token": access_token, "refresh_token": new_refresh}
 
@@ -529,9 +552,15 @@ class Authenticator:
         self, tokens: Dict[str, Any], project_id: Optional[str]
     ) -> Dict[str, Any]:
         expires_in = tokens.get("expires_in", 3600)
-        return {
+        auth_record = {
             "access_token": tokens["access_token"],
             "refresh_token": tokens.get("refresh_token", ""),
             "expires_at": time.time() + int(expires_in) - TOKEN_EXPIRY_BUFFER_SECONDS,
             "project_id": project_id,
         }
+        client_id = self._client_id or os.getenv("GEMINI_CLI_OAUTH_CLIENT_ID")
+        client_secret = self._client_secret or os.getenv("GEMINI_CLI_OAUTH_CLIENT_SECRET")
+        if client_id and client_secret:
+            auth_record[OAUTH_CLIENT_ID_FIELD] = client_id
+            auth_record[OAUTH_CLIENT_SECRET_FIELD] = client_secret
+        return auth_record

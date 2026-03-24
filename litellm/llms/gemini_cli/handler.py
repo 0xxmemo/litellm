@@ -105,6 +105,35 @@ def _get_access_token(authenticator: Authenticator, model: str) -> str:
         )
 
 
+def _raise_authentication_error(model: str, exc: Exception) -> None:
+    raise litellm.AuthenticationError(
+        model=model,
+        llm_provider="gemini_cli",
+        message=str(exc),
+    )
+
+
+def _get_refreshed_headers(
+    authenticator: Authenticator,
+    model: str,
+    extra_headers: Optional[dict],
+    error_headers: Optional[Union[httpx.Headers, dict]] = None,
+) -> dict:
+    auth_data = authenticator._read_auth_file() or {}
+    refresh_token = auth_data.get("refresh_token")
+    if not refresh_token:
+        raise VertexAIError(
+            status_code=401,
+            message="Gemini CLI token expired and no refresh_token found.",
+            headers=error_headers,
+        )
+    try:
+        refreshed = authenticator._refresh_tokens(refresh_token, auth_data=auth_data)
+        return _build_headers(refreshed["access_token"], extra_headers)
+    except (RefreshAccessTokenError, GetAccessTokenError) as exc:
+        _raise_authentication_error(model, exc)
+
+
 class _UnwrappingResponse:
     """Wraps an httpx.Response to unwrap Code Assist envelope on .json()."""
 
@@ -166,6 +195,8 @@ async def _async_make_call(
     model: str,
     messages: list,
     logging_obj: LiteLLMLoggingObj,
+    authenticator: Authenticator,
+    extra_headers: Optional[dict] = None,
 ):
     """Async streaming call."""
     if client is None:
@@ -174,6 +205,12 @@ async def _async_make_call(
     response = await client.post(
         api_base, headers=headers, data=data, stream=True, logging_obj=logging_obj
     )
+
+    if response.status_code == 401:
+        headers = _get_refreshed_headers(authenticator, model, extra_headers)
+        response = await client.post(
+            api_base, headers=headers, data=data, stream=True, logging_obj=logging_obj
+        )
 
     if response.status_code != 200:
         raise VertexAIError(
@@ -208,6 +245,8 @@ def _sync_make_call(
     model: str,
     messages: list,
     logging_obj: LiteLLMLoggingObj,
+    authenticator: Authenticator,
+    extra_headers: Optional[dict] = None,
 ):
     """Sync streaming call."""
     if client is None:
@@ -216,6 +255,17 @@ def _sync_make_call(
     response = client.post(
         api_base, headers=headers, data=data, stream=True, logging_obj=logging_obj
     )
+
+    if response.status_code == 401:
+        headers = _get_refreshed_headers(
+            authenticator,
+            model,
+            extra_headers,
+            error_headers=response.headers,
+        )
+        response = client.post(
+            api_base, headers=headers, data=data, stream=True, logging_obj=logging_obj
+        )
 
     if response.status_code != 200 and response.status_code != 201:
         raise VertexAIError(
@@ -336,6 +386,8 @@ class GeminiCLIHandler:
                         model=model,
                         messages=messages,
                         logging_obj=logging_obj,
+                        authenticator=self.authenticator,
+                        extra_headers=extra_headers,
                     ),
                     model=model,
                     custom_llm_provider="vertex_ai_beta",
@@ -375,6 +427,8 @@ class GeminiCLIHandler:
                     model=model,
                     messages=messages,
                     logging_obj=logging_obj,
+                    authenticator=self.authenticator,
+                    extra_headers=extra_headers,
                 ),
                 model=model,
                 custom_llm_provider="vertex_ai_beta",
@@ -399,34 +453,20 @@ class GeminiCLIHandler:
             response.raise_for_status()
         except httpx.HTTPStatusError as err:
             if err.response.status_code == 401:
-                # Token can be revoked/invalid before local expiry window; force one refresh and retry.
+                refreshed_headers = _get_refreshed_headers(
+                    self.authenticator,
+                    model,
+                    extra_headers,
+                    error_headers=err.response.headers,
+                )
                 try:
-                    auth_data = self.authenticator._read_auth_file() or {}
-                    refresh_token = auth_data.get("refresh_token")
-                    if refresh_token:
-                        refreshed = self.authenticator._refresh_tokens(refresh_token)
-                        refreshed_headers = _build_headers(
-                            refreshed["access_token"], extra_headers
-                        )
-                        response = sync_client.post(
-                            url=url,
-                            headers=refreshed_headers,
-                            json=data,
-                            logging_obj=logging_obj,
-                        )
-                        response.raise_for_status()
-                    else:
-                        raise VertexAIError(
-                            status_code=401,
-                            message="Gemini CLI token expired and no refresh_token found.",
-                            headers=err.response.headers,
-                        )
-                except RefreshAccessTokenError as refresh_err:
-                    raise litellm.AuthenticationError(
-                        model=model,
-                        llm_provider="gemini_cli",
-                        message=str(refresh_err),
+                    response = sync_client.post(
+                        url=url,
+                        headers=refreshed_headers,
+                        json=data,
+                        logging_obj=logging_obj,
                     )
+                    response.raise_for_status()
                 except httpx.HTTPStatusError as retry_err:
                     raise VertexAIError(
                         status_code=retry_err.response.status_code,
@@ -491,34 +531,20 @@ class GeminiCLIHandler:
             response.raise_for_status()
         except httpx.HTTPStatusError as err:
             if err.response.status_code == 401:
-                # Token can be revoked/invalid before local expiry window; force one refresh and retry.
+                refreshed_headers = _get_refreshed_headers(
+                    self.authenticator,
+                    model,
+                    None,
+                    error_headers=err.response.headers,
+                )
                 try:
-                    auth_data = self.authenticator._read_auth_file() or {}
-                    refresh_token = auth_data.get("refresh_token")
-                    if refresh_token:
-                        refreshed = self.authenticator._refresh_tokens(refresh_token)
-                        refreshed_headers = _build_headers(
-                            refreshed["access_token"], None
-                        )
-                        response = await async_client.post(
-                            url=url,
-                            headers=refreshed_headers,
-                            json=data,
-                            logging_obj=logging_obj,
-                        )
-                        response.raise_for_status()
-                    else:
-                        raise VertexAIError(
-                            status_code=401,
-                            message="Gemini CLI token expired and no refresh_token found.",
-                            headers=err.response.headers,
-                        )
-                except RefreshAccessTokenError as refresh_err:
-                    raise litellm.AuthenticationError(
-                        model=model,
-                        llm_provider="gemini_cli",
-                        message=str(refresh_err),
+                    response = await async_client.post(
+                        url=url,
+                        headers=refreshed_headers,
+                        json=data,
+                        logging_obj=logging_obj,
                     )
+                    response.raise_for_status()
                 except httpx.HTTPStatusError as retry_err:
                     raise VertexAIError(
                         status_code=retry_err.response.status_code,
