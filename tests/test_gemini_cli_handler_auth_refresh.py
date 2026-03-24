@@ -251,6 +251,27 @@ def test_get_access_token_refresh_uses_stored_oauth_credentials(monkeypatch):
     }
 
 
+def test_resolve_oauth_credentials_prefers_auth_file_over_cached_or_env(monkeypatch):
+    handler = GeminiCLIHandler()
+    handler.authenticator._client_id = "cached-client-id"
+    handler.authenticator._client_secret = "cached-client-secret"
+
+    monkeypatch.setenv("GEMINI_CLI_OAUTH_CLIENT_ID", "env-client-id")
+    monkeypatch.setenv("GEMINI_CLI_OAUTH_CLIENT_SECRET", "env-client-secret")
+
+    auth_data = {
+        "oauth_client_id": "file-client-id",
+        "oauth_client_secret": "file-client-secret",
+    }
+
+    client_id, client_secret = handler.authenticator._resolve_oauth_credentials(
+        auth_data=auth_data
+    )
+
+    assert client_id == "file-client-id"
+    assert client_secret == "file-client-secret"
+
+
 def test_async_streaming_retries_once_on_401_and_uses_refreshed_token(monkeypatch):
     import asyncio
 

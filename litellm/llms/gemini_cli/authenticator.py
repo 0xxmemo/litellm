@@ -169,6 +169,14 @@ class Authenticator:
         2. Stored auth file metadata
         3. Extract from installed Gemini CLI binary
         """
+        stored_auth_data = auth_data or self._read_auth_file() or {}
+        stored_client_id = stored_auth_data.get(OAUTH_CLIENT_ID_FIELD)
+        stored_client_secret = stored_auth_data.get(OAUTH_CLIENT_SECRET_FIELD)
+        if stored_client_id and stored_client_secret:
+            self._client_id = stored_client_id
+            self._client_secret = stored_client_secret
+            return stored_client_id, stored_client_secret
+
         if self._client_id and self._client_secret:
             return self._client_id, self._client_secret
 
@@ -179,14 +187,6 @@ class Authenticator:
             self._client_id = client_id
             self._client_secret = client_secret
             return client_id, client_secret
-
-        stored_auth_data = auth_data or self._read_auth_file() or {}
-        stored_client_id = stored_auth_data.get(OAUTH_CLIENT_ID_FIELD)
-        stored_client_secret = stored_auth_data.get(OAUTH_CLIENT_SECRET_FIELD)
-        if stored_client_id and stored_client_secret:
-            self._client_id = stored_client_id
-            self._client_secret = stored_client_secret
-            return stored_client_id, stored_client_secret
 
         extracted = self._extract_credentials_from_cli()
         if extracted:
