@@ -27,6 +27,7 @@ from .common_utils import (
 
 TOKEN_EXPIRY_SKEW_SECONDS = 60
 _MEM_CACHE_TTL = 60
+AUTH_FILE_COMPAT_PATH = os.path.expanduser("~/.litellm/auth.qwen_portal.json")
 
 
 class Authenticator:
@@ -92,6 +93,10 @@ class Authenticator:
                         "Qwen Portal refresh token failed, re-login required: %s",
                         exc,
                     )
+                    raise GetAccessTokenError(
+                        message=str(exc),
+                        status_code=getattr(exc, "status_code", 401),
+                    )
 
         # Fall back to syncing from Qwen Code CLI's credential file
         synced = self._try_sync_qwen_cli_creds()
@@ -151,14 +156,25 @@ class Authenticator:
             os.makedirs(self.token_dir, exist_ok=True)
 
     def _read_auth_file(self) -> Optional[Dict[str, Any]]:
-        try:
-            with open(self.auth_file, "r") as f:
-                return json.load(f)
-        except IOError:
-            return None
-        except json.JSONDecodeError as exc:
-            verbose_logger.warning("Invalid Qwen Portal auth file: %s", exc)
-            return None
+        candidates = [self.auth_file]
+        if AUTH_FILE_COMPAT_PATH not in candidates:
+            candidates.append(AUTH_FILE_COMPAT_PATH)
+
+        for candidate in candidates:
+            try:
+                with open(candidate, "r") as f:
+                    auth_data = json.load(f)
+                self.auth_file = candidate
+                self.token_dir = os.path.dirname(candidate)
+                return auth_data
+            except IOError:
+                continue
+            except json.JSONDecodeError as exc:
+                verbose_logger.warning(
+                    "Invalid Qwen Portal auth file %s: %s", candidate, exc
+                )
+                continue
+        return None
 
     def _write_auth_file(self, data: Dict[str, Any]) -> None:
         try:
@@ -217,6 +233,7 @@ class Authenticator:
             resource_url = existing_data.get("resource_url")
 
         auth_record = {
+            **(existing_data or {}),
             "access_token": access_token,
             "refresh_token": data.get("refresh_token", refresh_token),
             "expires_at": int(time.time() + expires_in),
