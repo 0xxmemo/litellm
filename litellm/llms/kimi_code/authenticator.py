@@ -10,6 +10,7 @@ import json
 import os
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -188,10 +189,12 @@ class Authenticator:
                     "Accept": "application/json",
                     **common_headers,
                 },
-                content=(
-                    f"grant_type=refresh_token"
-                    f"&refresh_token={refresh_token}"
-                    f"&client_id={KIMI_CODE_CLIENT_ID}"
+                content=urlencode(
+                    {
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                        "client_id": KIMI_CODE_CLIENT_ID,
+                    }
                 ),
             )
             resp.raise_for_status()
