@@ -53,13 +53,12 @@ CLIENT_SECRET_PATTERN = re.compile(r"GOCSPX-[A-Za-z0-9_-]+")
 
 class Authenticator:
     def __init__(self) -> None:
+        self.auth_filename = os.getenv("GEMINI_CLI_AUTH_FILE", "auth.gemini_cli.json")
         self.token_dir = os.getenv(
             "GEMINI_CLI_TOKEN_DIR",
             os.path.expanduser("~/.config/litellm/gemini_cli"),
         )
-        self.auth_file = os.path.join(
-            self.token_dir, os.getenv("GEMINI_CLI_AUTH_FILE", "auth.gemini_cli.json")
-        )
+        self.auth_file = os.path.join(self.token_dir, self.auth_filename)
         self._ensure_token_dir()
         self._client_id: Optional[str] = None
         self._client_secret: Optional[str] = None
@@ -106,18 +105,40 @@ class Authenticator:
         if not os.path.exists(self.token_dir):
             os.makedirs(self.token_dir, exist_ok=True)
 
+    def _get_auth_file_candidates(self) -> list[str]:
+        # Primary path used by LiteLLM provider config
+        candidates = [self.auth_file]
+
+        # Compatibility with litellmctl auth flow default output (~/.litellm/auth.gemini_cli.json)
+        home_litellm_auth = os.path.join(
+            os.path.expanduser("~/.litellm"), self.auth_filename
+        )
+        if home_litellm_auth not in candidates:
+            candidates.append(home_litellm_auth)
+
+        return candidates
+
     def _read_auth_file(self) -> Optional[Dict[str, Any]]:
-        try:
-            with open(self.auth_file, "r") as f:
-                return json.load(f)
-        except IOError:
-            return None
-        except json.JSONDecodeError as exc:
-            verbose_logger.warning("Invalid Gemini CLI auth file: %s", exc)
-            return None
+        for candidate in self._get_auth_file_candidates():
+            try:
+                with open(candidate, "r") as f:
+                    auth_data = json.load(f)
+                # Pin to the discovered auth file path so refresh writes back there.
+                self.auth_file = candidate
+                self.token_dir = os.path.dirname(candidate)
+                return auth_data
+            except IOError:
+                continue
+            except json.JSONDecodeError as exc:
+                verbose_logger.warning(
+                    "Invalid Gemini CLI auth file %s: %s", candidate, exc
+                )
+                continue
+        return None
 
     def _write_auth_file(self, data: Dict[str, Any]) -> None:
         try:
+            os.makedirs(os.path.dirname(self.auth_file), exist_ok=True)
             with open(self.auth_file, "w") as f:
                 json.dump(data, f, indent=2)
         except IOError as exc:
@@ -160,55 +181,81 @@ class Authenticator:
                 "Could not resolve Gemini CLI OAuth credentials. "
                 "Either set GEMINI_CLI_OAUTH_CLIENT_ID and GEMINI_CLI_OAUTH_CLIENT_SECRET "
                 "environment variables, or install the Gemini CLI: "
-                "npm install -g @anthropic-ai/gemini-cli"
+                "npm install -g @google/gemini-cli"
             ),
             status_code=401,
         )
 
-    def _extract_credentials_from_cli(self) -> Optional[tuple]:
-        """
-        Find the installed Gemini CLI and extract OAuth client credentials
-        from its bundled source, following OpenClaw's approach.
-        """
+    def _find_oauth2_js(self) -> Optional[str]:
+        """Find gemini-cli-core oauth2.js across npm/bun/pnpm/yarn layouts."""
+        oauth_subpath = os.path.join(
+            "@google", "gemini-cli-core", "dist", "src", "code_assist", "oauth2.js"
+        )
+
         gemini_bin = shutil.which("gemini")
-        if not gemini_bin:
-            verbose_logger.debug("Gemini CLI binary not found in PATH")
+        if gemini_bin:
+            real_path = os.path.realpath(gemini_bin)
+            current_dir = os.path.dirname(real_path)
+            for _ in range(10):
+                candidate = os.path.join(current_dir, "node_modules", oauth_subpath)
+                if os.path.isfile(candidate):
+                    return candidate
+                parent_dir = os.path.dirname(current_dir)
+                if parent_dir == current_dir:
+                    break
+                current_dir = parent_dir
+
+        home = os.path.expanduser("~")
+        candidates = [
+            os.path.join(home, ".bun", "install", "global", "node_modules", oauth_subpath),
+            os.path.join("/usr/local/lib/node_modules", oauth_subpath),
+            os.path.join("/usr/lib/node_modules", oauth_subpath),
+            os.path.join(home, ".npm-global", "lib", "node_modules", oauth_subpath),
+        ]
+
+        nvm_dir = os.getenv("NVM_DIR", os.path.join(home, ".nvm"))
+        nvm_versions_dir = os.path.join(nvm_dir, "versions", "node")
+        if os.path.isdir(nvm_versions_dir):
+            for version in os.listdir(nvm_versions_dir):
+                candidates.append(
+                    os.path.join(
+                        nvm_versions_dir,
+                        version,
+                        "lib",
+                        "node_modules",
+                        oauth_subpath,
+                    )
+                )
+
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+
+        return None
+
+    def _extract_credentials_from_cli(self) -> Optional[tuple]:
+        """Extract OAuth client credentials from installed Gemini CLI sources."""
+        oauth_file = self._find_oauth2_js()
+        if not oauth_file:
+            verbose_logger.debug("Gemini CLI oauth2.js not found")
             return None
 
         try:
-            real_path = os.path.realpath(gemini_bin)
-            bin_dir = os.path.dirname(real_path)
+            with open(oauth_file, "r") as f:
+                content = f.read()
 
-            search_paths = [
-                os.path.join(
-                    bin_dir, "..", "lib", "node_modules", "@google",
-                    "gemini-cli-core", "dist", "src", "code_assist", "oauth2.js",
-                ),
-                os.path.join(
-                    bin_dir, "..", "node_modules", "@google",
-                    "gemini-cli-core", "dist", "src", "code_assist", "oauth2.js",
-                ),
-            ]
+            client_id_match = CLIENT_ID_PATTERN.search(content)
+            client_secret_match = CLIENT_SECRET_PATTERN.search(content)
 
-            for oauth_file in search_paths:
-                oauth_file = os.path.normpath(oauth_file)
-                if os.path.isfile(oauth_file):
-                    with open(oauth_file, "r") as f:
-                        content = f.read()
-
-                    client_id_match = CLIENT_ID_PATTERN.search(content)
-                    client_secret_match = CLIENT_SECRET_PATTERN.search(content)
-
-                    if client_id_match and client_secret_match:
-                        verbose_logger.debug(
-                            "Extracted Gemini CLI OAuth credentials from %s",
-                            oauth_file,
-                        )
-                        return client_id_match.group(), client_secret_match.group()
-
+            if client_id_match and client_secret_match:
+                verbose_logger.debug(
+                    "Extracted Gemini CLI OAuth credentials from %s",
+                    oauth_file,
+                )
+                return client_id_match.group(), client_secret_match.group()
         except Exception as exc:
             verbose_logger.debug(
-                "Failed to extract credentials from Gemini CLI: %s", exc
+                "Failed to extract credentials from Gemini CLI oauth2.js: %s", exc
             )
 
         return None
