@@ -19,8 +19,6 @@ from litellm.llms.custom_httpx.http_handler import _get_httpx_client
 from .common_utils import (
     KIMI_CODE_CLIENT_ID,
     KIMI_CODE_DEFAULT_API_BASE,
-    KIMI_CODE_TOKEN_URL,
-    KIMI_CODE_USER_AGENT,
     GetAccessTokenError,
     RefreshAccessTokenError,
     get_kimi_code_default_headers,
@@ -28,6 +26,7 @@ from .common_utils import (
 
 TOKEN_EXPIRY_SKEW_SECONDS = 60
 _MEM_CACHE_TTL = 60
+AUTH_FILE_COMPAT_PATH = os.path.expanduser("~/.litellm/auth.kimi_code.json")
 
 
 class Authenticator:
@@ -127,14 +126,23 @@ class Authenticator:
             os.makedirs(self.token_dir, exist_ok=True)
 
     def _read_auth_file(self) -> Optional[Dict[str, Any]]:
-        try:
-            with open(self.auth_file, "r") as f:
-                return json.load(f)
-        except IOError:
-            return None
-        except json.JSONDecodeError as exc:
-            verbose_logger.warning("Invalid Kimi Code auth file: %s", exc)
-            return None
+        candidates = [self.auth_file]
+        if AUTH_FILE_COMPAT_PATH not in candidates:
+            candidates.append(AUTH_FILE_COMPAT_PATH)
+
+        for candidate in candidates:
+            try:
+                with open(candidate, "r") as f:
+                    auth_data = json.load(f)
+                self.auth_file = candidate
+                self.token_dir = os.path.dirname(candidate)
+                return auth_data
+            except IOError:
+                continue
+            except json.JSONDecodeError as exc:
+                verbose_logger.warning("Invalid Kimi Code auth file %s: %s", candidate, exc)
+                continue
+        return None
 
     def _write_auth_file(self, data: Dict[str, Any]) -> None:
         try:
