@@ -5,6 +5,7 @@ This test verifies that system messages are properly filtered out when using
 Codex models, which don't support system messages.
 """
 import pytest
+from litellm.llms.chatgpt.common_utils import get_chatgpt_default_instructions
 from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
 from litellm.llms.chatgpt.chat.transformation import ChatGPTConfig
 from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
@@ -150,6 +151,88 @@ class TestChatGPTResponsesAPIConfigExtractSystemMessages:
         assert len(filtered_input) == 1
         assert "First instruction\n\nSecond instruction" == extracted
 
+    def test_no_system_content_returns_original_content(self):
+        """Test that content is preserved when nothing needs extraction."""
+        input_data = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Hello!"},
+                    {"type": "input_image", "image_url": "https://example.com/image.png"},
+                    "plain text",
+                ],
+            },
+            "raw entry",
+        ]
+
+        filtered_input, extracted = self.config._extract_and_filter_system_messages(input_data)
+
+        assert extracted == ""
+        assert filtered_input == input_data
+
+    def test_non_dict_content_items_are_preserved_when_filtering_system_text(self):
+        """Test that non-dict content survives alongside extracted system-like text."""
+        input_data = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    "plain text",
+                    {"type": "input_text", "text": "System: Do this first"},
+                    {"type": "input_text", "text": "Regular text"},
+                    123,
+                ],
+            }
+        ]
+
+        filtered_input, extracted = self.config._extract_and_filter_system_messages(input_data)
+
+        assert extracted == "System: Do this first"
+        assert filtered_input == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    "plain text",
+                    {"type": "input_text", "text": "Regular text"},
+                    123,
+                ],
+            }
+        ]
+
+    def test_multiple_extracted_fragments_preserve_order(self):
+        """Test that extracted fragments keep their original order."""
+        input_data = [
+            {"type": "easy_input_message", "content": "Top-level instruction"},
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "System: First"},
+                    {"type": "input_text", "text": "Regular text"},
+                    {"type": "input_text", "text": "You are a code assistant"},
+                ],
+            },
+            {"type": "message", "role": "system", "content": [{"type": "input_text", "text": "Final instruction"}]},
+        ]
+
+        filtered_input, extracted = self.config._extract_and_filter_system_messages(input_data)
+
+        assert extracted == (
+            "Top-level instruction\n\n"
+            "System: First\n\n"
+            "You are a code assistant\n\n"
+            "Final instruction"
+        )
+        assert filtered_input == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Regular text"}],
+            }
+        ]
+
     def test_instructions_required_for_codex_in_transform_request(self):
         """Test that instructions are added for Codex models in transform_responses_api_request."""
         from litellm.types.router import GenericLiteLLMParams
@@ -168,7 +251,7 @@ class TestChatGPTResponsesAPIConfigExtractSystemMessages:
 
         # Instructions should be present for Codex models
         assert "instructions" in result
-        assert result["instructions"] == "You are a helpful coding assistant."
+        assert result["instructions"] == get_chatgpt_default_instructions()
 
     def test_system_messages_merged_into_instructions_for_codex(self):
         """Test that system messages are merged into instructions for Codex models."""

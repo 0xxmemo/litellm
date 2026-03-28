@@ -23,6 +23,7 @@ from ..common_utils import (
     GetAccessTokenError,
     ensure_chatgpt_session_id,
     get_chatgpt_default_headers,
+    get_chatgpt_default_instructions,
 )
 
 
@@ -71,61 +72,67 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         - message objects with role="system" (merged to instructions)
         - easy_input_message objects (contain system instructions, merged to instructions)
         """
-        if isinstance(input, str):
+        if isinstance(input, str) or not isinstance(input, list):
             return input, ""
 
-        if isinstance(input, list):
-            filtered_input = []
-            system_contents = []
+        filtered_input = []
+        append_filtered_input = filtered_input.append
+        system_contents: List[str] = []
+        append_system_content = system_contents.append
 
-            for item in input:
-                if isinstance(item, dict):
-                    item_type = item.get("type")
+        for item in input:
+            if not isinstance(item, dict):
+                append_filtered_input(item)
+                continue
 
-                    # Extract easy_input_message content for instructions
-                    if item_type == "easy_input_message":
-                        content = item.get("content", "")
-                        if content:
-                            system_contents.append(str(content))
+            item_type = item.get("type")
+            if item_type == "easy_input_message":
+                content = item.get("content")
+                if content:
+                    append_system_content(str(content))
+                continue
+
+            content = item.get("content")
+            if item_type == "message" and item.get("role") == "system":
+                if isinstance(content, list):
+                    for content_item in content:
+                        if isinstance(content_item, dict):
+                            if content_item.get("type") == "input_text":
+                                text = content_item.get("text")
+                                if text:
+                                    append_system_content(text)
+                        elif isinstance(content_item, str):
+                            append_system_content(content_item)
+                elif isinstance(content, str):
+                    append_system_content(content)
+                continue
+
+            if not isinstance(content, list):
+                append_filtered_input(item)
+                continue
+
+            filtered_content: Optional[List[Any]] = None
+            for index, content_item in enumerate(content):
+                if (
+                    isinstance(content_item, dict)
+                    and content_item.get("type") == "input_text"
+                    and isinstance(content_item.get("text"), str)
+                ):
+                    text = content_item["text"]
+                    if text.startswith("System:") or text.startswith("You are"):
+                        append_system_content(text)
+                        if filtered_content is None:
+                            filtered_content = content[:index]
                         continue
 
-                    # Extract system message content for instructions
-                    if item_type == "message" and item.get("role") == "system":
-                        content_list = item.get("content", [])
-                        if isinstance(content_list, list):
-                            for c in content_list:
-                                if isinstance(c, dict) and c.get("type") == "input_text":
-                                    text = c.get("text", "")
-                                    if text:
-                                        system_contents.append(text)
-                                elif isinstance(c, str):
-                                    system_contents.append(c)
-                        elif isinstance(content_list, str):
-                            system_contents.append(content_list)
-                        continue
+                if filtered_content is not None:
+                    filtered_content.append(content_item)
 
-                    # Handle message content - extract system-like text
-                    if isinstance(item.get("content"), list):
-                        filtered_content = []
-                        for c in item["content"]:
-                            if isinstance(c, dict) and c.get("type") == "input_text":
-                                text = c.get("text", "")
-                                # Extract system-like content for instructions
-                                if text.startswith("System:") or text.startswith("You are"):
-                                    system_contents.append(text)
-                                    continue
-                                filtered_content.append(c)
-                            else:
-                                filtered_content.append(c)
-                        item["content"] = filtered_content
+            if filtered_content is not None:
+                item["content"] = filtered_content
+            append_filtered_input(item)
 
-                    filtered_input.append(item)
-                else:
-                    filtered_input.append(item)
-
-            return filtered_input, "\n\n".join(system_contents)
-
-        return input, ""
+        return filtered_input, "\n\n".join(system_contents)
 
     def transform_responses_api_request(
         self,
@@ -154,8 +161,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             else:
                 request["instructions"] = extracted_system_content
         elif not existing_instructions:
-            # Default minimal instruction if no system content provided
-            request["instructions"] = "You are a helpful coding assistant."
+            request["instructions"] = get_chatgpt_default_instructions()
         request["store"] = False
         request["stream"] = True
         include = list(request.get("include") or [])
