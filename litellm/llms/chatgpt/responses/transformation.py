@@ -93,7 +93,10 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 continue
 
             content = item.get("content")
-            if item_type == "message" and item.get("role") == "system":
+            # Chat-completions-shaped turns forwarded as Responses `input` (e.g. proxy maps
+            # `messages` -> `input`) use role + content only — no top-level `type`.
+            # ChatGPT rejects those as system messages unless merged into `instructions`.
+            if item.get("role") == "system" and item_type in (None, "message"):
                 if isinstance(content, list):
                     for content_item in content:
                         if isinstance(content_item, dict):
@@ -101,10 +104,14 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
                                 text = content_item.get("text")
                                 if text:
                                     append_system_content(text)
+                            elif isinstance(content_item.get("text"), str):
+                                append_system_content(content_item["text"])
                         elif isinstance(content_item, str):
                             append_system_content(content_item)
                 elif isinstance(content, str):
                     append_system_content(content)
+                elif content is not None:
+                    append_system_content(str(content))
                 continue
 
             if not isinstance(content, list):

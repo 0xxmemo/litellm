@@ -99,6 +99,18 @@ class TestChatGPTResponsesAPIConfigExtractSystemMessages:
         assert filtered_input[0]["role"] == "user"
         assert extracted == "System instruction"
 
+    def test_extract_system_role_without_type_chat_shaped_input(self):
+        """Proxy often forwards chat `messages` as `input` without per-item `type` (ChatGPT rejects role=system)."""
+        input_data = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hi"},
+        ]
+        filtered_input, extracted = self.config._extract_and_filter_system_messages(input_data)
+
+        assert len(filtered_input) == 1
+        assert filtered_input[0]["role"] == "user"
+        assert extracted == "You are helpful."
+
     def test_extract_easy_input_message(self):
         """Test extracting easy_input_message content."""
         input_data = [
