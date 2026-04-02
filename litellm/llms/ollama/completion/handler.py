@@ -10,6 +10,14 @@ import litellm
 from litellm.types.utils import EmbeddingResponse
 
 
+def _normalize_ollama_api_base(url: str) -> str:
+    """Strip whitespace and a single pair of surrounding quotes (bad .env loads)."""
+    s = (url or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        s = s[1:-1].strip()
+    return s.rstrip("/")
+
+
 def _prepare_ollama_embedding_payload(
     model: str, prompts: List[str], optional_params: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -78,6 +86,7 @@ async def ollama_aembeddings(
     logging_obj: Any,
     encoding: Any,
 ):
+    api_base = _normalize_ollama_api_base(api_base)
     if not api_base.endswith("/api/embed"):
         api_base += "/api/embed"
 
@@ -105,6 +114,7 @@ def ollama_embeddings(
     logging_obj: Any,
     encoding: Any = None,
 ):
+    api_base = _normalize_ollama_api_base(api_base)
     if not api_base.endswith("/api/embed"):
         api_base += "/api/embed"
 
