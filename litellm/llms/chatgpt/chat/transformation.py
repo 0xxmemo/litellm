@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, Tuple, cast
+from typing import Any, List, Optional, Tuple
 
 from litellm.exceptions import AuthenticationError
 from litellm.llms.openai.openai import OpenAIConfig
@@ -9,6 +9,7 @@ from ..common_utils import (
     GetAccessTokenError,
     ensure_chatgpt_session_id,
     get_chatgpt_default_headers,
+    get_chatgpt_default_instructions,
 )
 from .streaming_utils import ChatGPTToolCallNormalizer
 
@@ -36,42 +37,27 @@ def _chatgpt_message_content_to_text(content: Any) -> str:
     return str(content)
 
 
-def _prepend_text_to_message_content(prefix: str, content: Any) -> Any:
-    if not prefix:
-        return content
-    if isinstance(content, str):
-        return f"{prefix}\n\n{content}" if content else prefix
-    if isinstance(content, list):
-        return [{"type": "text", "text": prefix}, *content]
-    return f"{prefix}\n\n{_chatgpt_message_content_to_text(content)}"
-
-
-def _fold_system_and_developer_into_messages(
+def _merge_system_and_developer_into_instruction_text(
     messages: List[AllMessageValues],
-) -> List[AllMessageValues]:
-    """ChatGPT rejects role=system/developer on chat completions — fold into the next user/assistant turn."""
-    pending: List[str] = []
-    out: List[AllMessageValues] = []
+) -> Tuple[List[AllMessageValues], str]:
+    """Split system/developer turns out of `messages` and merge their text for `instructions`.
+
+    Content is not discarded: it is concatenated (in order) and returned so the caller can
+    merge it into the request's top-level ``instructions`` field. Remaining messages are the
+    conversation without those roles (ChatGPT rejects them on the wire).
+    """
+    instruction_parts: List[str] = []
+    conversation_messages: List[AllMessageValues] = []
     for msg in messages:
-        role = msg.get("role")
-        if role in ("system", "developer"):
-            pending.append(_chatgpt_message_content_to_text(msg.get("content")))
+        if msg.get("role") in ("system", "developer"):
+            raw = _chatgpt_message_content_to_text(msg.get("content"))
+            instruction_parts.append(raw)
             continue
-        if pending and role in ("user", "assistant"):
-            prefix = "\n\n".join(p for p in pending if p)
-            pending.clear()
-            new_msg = dict(msg)
-            new_msg["content"] = _prepend_text_to_message_content(
-                prefix, msg.get("content")
-            )
-            out.append(cast(AllMessageValues, new_msg))
-            continue
-        out.append(msg)
-    if pending:
-        prefix = "\n\n".join(p for p in pending if p)
-        if prefix:
-            out.insert(0, {"role": "user", "content": prefix})
-    return out
+        conversation_messages.append(msg)
+    merged_instructions = "\n\n".join(
+        part for part in instruction_parts if part.strip() != ""
+    )
+    return conversation_messages, merged_instructions
 
 
 class ChatGPTConfig(OpenAIConfig):
@@ -142,6 +128,36 @@ class ChatGPTConfig(OpenAIConfig):
     def _transform_messages(
         self, messages: List[AllMessageValues], model: str
     ) -> List[AllMessageValues]:
-        """Fold system/developer into user/assistant content; ChatGPT disallows those roles."""
-        folded = _fold_system_and_developer_into_messages(messages)
-        return super()._transform_messages(folded, model)
+        return super()._transform_messages(messages, model)
+
+    def transform_request(
+        self,
+        model: str,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        litellm_params: dict,
+        headers: dict,
+    ) -> dict:
+        """Merge system/developer content into top-level ``instructions`` (Responses-style)."""
+        conversation_messages, merged_from_roles = (
+            _merge_system_and_developer_into_instruction_text(messages)
+        )
+        optional_params = dict(optional_params)
+        existing_instructions = (optional_params.get("instructions") or "").strip()
+        if merged_from_roles:
+            optional_params["instructions"] = (
+                f"{merged_from_roles}\n\n{existing_instructions}"
+                if existing_instructions
+                else merged_from_roles
+            )
+        elif not existing_instructions:
+            optional_params["instructions"] = get_chatgpt_default_instructions()
+        messages_transformed = self._transform_messages(
+            messages=conversation_messages, model=model
+        )
+        optional_params.pop("max_retries", None)
+        return {
+            "model": model,
+            "messages": messages_transformed,
+            **optional_params,
+        }

@@ -39,47 +39,51 @@ class TestChatGPTConfigTransformMessages:
     def setup_method(self):
         self.config = ChatGPTConfig()
 
-    def test_system_messages_filtered_for_codex_model(self):
-        """System prompts are folded into the next user message for ChatGPT chat completions."""
+    def test_system_messages_become_instructions_in_transform_request(self):
+        """ChatGPT chat completions merge system into top-level `instructions` (not user content)."""
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello!"},
         ]
-        result = self.config._transform_messages(messages, "gpt-5.3-codex")
+        body = self.config.transform_request(
+            "gpt-5.3-codex", messages, {}, {}, {}
+        )
 
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
-        assert "helpful assistant" in str(result[0]["content"])
-        assert "Hello!" in str(result[0]["content"])
+        assert len(body["messages"]) == 1
+        assert body["messages"][0]["role"] == "user"
+        assert body["messages"][0]["content"] == "Hello!"
+        assert "helpful assistant" in body["instructions"]
 
-    def test_system_messages_folded_for_all_chatgpt_models(self):
-        """Non-codex ChatGPT models also reject role=system on the wire."""
+    def test_system_messages_become_instructions_for_non_codex_model(self):
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello!"},
         ]
-        result = self.config._transform_messages(messages, "gpt-5.4")
+        body = self.config.transform_request("gpt-5.4", messages, {}, {}, {})
 
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
-        assert "helpful" in str(result[0]["content"])
-        assert "Hello!" in str(result[0]["content"])
+        assert len(body["messages"]) == 1
+        assert body["messages"][0]["content"] == "Hello!"
+        assert "helpful assistant" in body["instructions"]
 
-    def test_multiple_messages_filtered_for_codex_model(self):
-        """Multiple system blocks fold into the next user/assistant turn."""
+    def test_multiple_system_blocks_merged_into_instructions(self):
         messages = [
             {"role": "system", "content": "System message 1"},
             {"role": "user", "content": "Hello!"},
             {"role": "system", "content": "System message 2"},
             {"role": "assistant", "content": "Hi there!"},
         ]
-        result = self.config._transform_messages(messages, "gpt-5.3-codex")
+        body = self.config.transform_request(
+            "gpt-5.3-codex", messages, {}, {}, {}
+        )
 
-        assert len(result) == 2
-        assert result[0]["role"] == "user"
-        assert "System message 1" in str(result[0]["content"])
-        assert result[1]["role"] == "assistant"
-        assert "System message 2" in str(result[1]["content"])
+        assert len(body["messages"]) == 2
+        assert body["messages"][0]["role"] == "user"
+        assert body["messages"][0]["content"] == "Hello!"
+        assert body["messages"][1]["role"] == "assistant"
+        assert body["messages"][1]["content"] == "Hi there!"
+        ins = body["instructions"]
+        assert "System message 1" in ins
+        assert "System message 2" in ins
 
 
 class TestChatGPTResponsesAPIConfigExtractSystemMessages:

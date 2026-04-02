@@ -30,7 +30,7 @@ from ..common_utils import (
 def _ingest_system_message_content_for_instructions(
     content: Any, append_system_content: Any
 ) -> None:
-    """Flatten system/developer message content into instruction fragments."""
+    """Append system/developer message content to the instruction-merge buffer (preserve all text)."""
     if isinstance(content, list):
         for content_item in content:
             if isinstance(content_item, dict):
@@ -82,16 +82,19 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
     def _extract_and_filter_system_messages(
         self, input: Union[str, List[Any]]
     ) -> tuple[Union[str, List[Any]], str]:
-        """Extract system messages from input and merge them into instructions.
+        """Pull system/developer (and related) content from `input` for merging into ``instructions``.
+
+        This does **not** drop that content: it is accumulated into ``extracted_system_content``
+        so ``transform_responses_api_request`` can concatenate it with existing instructions.
+        The returned list omits those input items only because their text now lives in
+        ``instructions`` (ChatGPT disallows those roles in ``input``).
 
         Returns:
-            tuple: (filtered_input, extracted_system_content)
-            - filtered_input: Input with system messages removed
-            - extracted_system_content: Combined system message content for instructions
+            tuple: (input_without_merged_roles, text_to_merge_into_instructions)
 
-        The Responses API input format can contain:
-        - message objects with role="system" (merged to instructions)
-        - easy_input_message objects (contain system instructions, merged to instructions)
+        Supported shapes include:
+        - ``message`` / chat-shaped items with role ``system`` or ``developer``
+        - ``easy_input_message`` (treated as instruction-like payload)
         """
         if isinstance(input, str) or not isinstance(input, list):
             return input, ""
@@ -169,7 +172,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
     ) -> dict:
-        # Extract system messages and merge into instructions for all models
+        # Move system/developer text out of `input` and merge into `instructions` (never discard)
         input, extracted_system_content = self._extract_and_filter_system_messages(input)
 
         request = super().transform_responses_api_request(
@@ -180,7 +183,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             headers,
         )
 
-        # Merge extracted system content into instructions
+        # Concatenate extracted system/developer text with any existing instructions (preserve all)
         existing_instructions = request.get("instructions", "")
         if extracted_system_content:
             if existing_instructions:
