@@ -1,7 +1,6 @@
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, cast
 
 from litellm.exceptions import AuthenticationError
-from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 from litellm.llms.openai.openai import OpenAIConfig
 from litellm.types.llms.openai import AllMessageValues
 
@@ -12,6 +11,67 @@ from ..common_utils import (
     get_chatgpt_default_headers,
 )
 from .streaming_utils import ChatGPTToolCallNormalizer
+
+
+def _chatgpt_message_content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                elif block.get("type") == "input_text" and isinstance(
+                    block.get("text"), str
+                ):
+                    parts.append(block["text"])
+                elif isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return str(content)
+
+
+def _prepend_text_to_message_content(prefix: str, content: Any) -> Any:
+    if not prefix:
+        return content
+    if isinstance(content, str):
+        return f"{prefix}\n\n{content}" if content else prefix
+    if isinstance(content, list):
+        return [{"type": "text", "text": prefix}, *content]
+    return f"{prefix}\n\n{_chatgpt_message_content_to_text(content)}"
+
+
+def _fold_system_and_developer_into_messages(
+    messages: List[AllMessageValues],
+) -> List[AllMessageValues]:
+    """ChatGPT rejects role=system/developer on chat completions — fold into the next user/assistant turn."""
+    pending: List[str] = []
+    out: List[AllMessageValues] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role in ("system", "developer"):
+            pending.append(_chatgpt_message_content_to_text(msg.get("content")))
+            continue
+        if pending and role in ("user", "assistant"):
+            prefix = "\n\n".join(p for p in pending if p)
+            pending.clear()
+            new_msg = dict(msg)
+            new_msg["content"] = _prepend_text_to_message_content(
+                prefix, msg.get("content")
+            )
+            out.append(cast(AllMessageValues, new_msg))
+            continue
+        out.append(msg)
+    if pending:
+        prefix = "\n\n".join(p for p in pending if p)
+        if prefix:
+            out.insert(0, {"role": "user", "content": prefix})
+    return out
 
 
 class ChatGPTConfig(OpenAIConfig):
@@ -82,10 +142,6 @@ class ChatGPTConfig(OpenAIConfig):
     def _transform_messages(
         self, messages: List[AllMessageValues], model: str
     ) -> List[AllMessageValues]:
-        """Filter out system messages for Codex models which don't support them."""
-        if OpenAIGPT5Config.is_model_gpt_5_codex_model(model):
-            # Codex models don't support system messages - filter them out
-            return [
-                msg for msg in messages if msg.get("role") != "system"
-            ]
-        return super()._transform_messages(messages, model)
+        """Fold system/developer into user/assistant content; ChatGPT disallows those roles."""
+        folded = _fold_system_and_developer_into_messages(messages)
+        return super()._transform_messages(folded, model)

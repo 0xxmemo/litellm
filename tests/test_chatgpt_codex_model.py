@@ -40,32 +40,33 @@ class TestChatGPTConfigTransformMessages:
         self.config = ChatGPTConfig()
 
     def test_system_messages_filtered_for_codex_model(self):
-        """Test that system messages are filtered out for Codex models."""
+        """System prompts are folded into the next user message for ChatGPT chat completions."""
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello!"},
         ]
         result = self.config._transform_messages(messages, "gpt-5.3-codex")
 
-        # System message should be filtered out
         assert len(result) == 1
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == "Hello!"
+        assert "helpful assistant" in str(result[0]["content"])
+        assert "Hello!" in str(result[0]["content"])
 
-    def test_system_messages_not_filtered_for_non_codex_model(self):
-        """Test that system messages are kept for non-Codex models."""
+    def test_system_messages_folded_for_all_chatgpt_models(self):
+        """Non-codex ChatGPT models also reject role=system on the wire."""
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello!"},
         ]
-        result = self.config._transform_messages(messages, "gpt-4")
+        result = self.config._transform_messages(messages, "gpt-5.4")
 
-        # System message should be kept
-        assert len(result) == 2
-        assert result[0]["role"] == "system"
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        assert "helpful" in str(result[0]["content"])
+        assert "Hello!" in str(result[0]["content"])
 
     def test_multiple_messages_filtered_for_codex_model(self):
-        """Test that multiple system messages are filtered out for Codex models."""
+        """Multiple system blocks fold into the next user/assistant turn."""
         messages = [
             {"role": "system", "content": "System message 1"},
             {"role": "user", "content": "Hello!"},
@@ -74,10 +75,11 @@ class TestChatGPTConfigTransformMessages:
         ]
         result = self.config._transform_messages(messages, "gpt-5.3-codex")
 
-        # Both system messages should be filtered out
         assert len(result) == 2
         assert result[0]["role"] == "user"
+        assert "System message 1" in str(result[0]["content"])
         assert result[1]["role"] == "assistant"
+        assert "System message 2" in str(result[1]["content"])
 
 
 class TestChatGPTResponsesAPIConfigExtractSystemMessages:
@@ -110,6 +112,16 @@ class TestChatGPTResponsesAPIConfigExtractSystemMessages:
         assert len(filtered_input) == 1
         assert filtered_input[0]["role"] == "user"
         assert extracted == "You are helpful."
+
+    def test_extract_developer_role_merged_to_instructions(self):
+        input_data = [
+            {"role": "developer", "content": "Dev constraints here."},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hi"}]},
+        ]
+        filtered_input, extracted = self.config._extract_and_filter_system_messages(input_data)
+
+        assert len(filtered_input) == 1
+        assert extracted == "Dev constraints here."
 
     def test_extract_easy_input_message(self):
         """Test extracting easy_input_message content."""

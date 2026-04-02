@@ -27,6 +27,27 @@ from ..common_utils import (
 )
 
 
+def _ingest_system_message_content_for_instructions(
+    content: Any, append_system_content: Any
+) -> None:
+    """Flatten system/developer message content into instruction fragments."""
+    if isinstance(content, list):
+        for content_item in content:
+            if isinstance(content_item, dict):
+                if content_item.get("type") == "input_text":
+                    text = content_item.get("text")
+                    if text:
+                        append_system_content(text)
+                elif isinstance(content_item.get("text"), str):
+                    append_system_content(content_item["text"])
+            elif isinstance(content_item, str):
+                append_system_content(content_item)
+    elif isinstance(content, str):
+        append_system_content(content)
+    elif content is not None:
+        append_system_content(str(content))
+
+
 class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
     def __init__(self) -> None:
         super().__init__()
@@ -80,9 +101,19 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         system_contents: List[str] = []
         append_system_content = system_contents.append
 
-        for item in input:
+        excluded_roles_types = frozenset(
+            {"function_call", "function_call_output", "reasoning"}
+        )
+
+        for raw_item in input:
+            item: Any = raw_item
+            if hasattr(item, "model_dump") and callable(item.model_dump):
+                try:
+                    item = item.model_dump(exclude_none=True)
+                except Exception:
+                    pass
             if not isinstance(item, dict):
-                append_filtered_input(item)
+                append_filtered_input(raw_item)
                 continue
 
             item_type = item.get("type")
@@ -93,25 +124,14 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 continue
 
             content = item.get("content")
+            role_lower = (item.get("role") or "").lower()
             # Chat-completions-shaped turns forwarded as Responses `input` (e.g. proxy maps
             # `messages` -> `input`) use role + content only — no top-level `type`.
-            # ChatGPT rejects those as system messages unless merged into `instructions`.
-            if item.get("role") == "system" and item_type in (None, "message"):
-                if isinstance(content, list):
-                    for content_item in content:
-                        if isinstance(content_item, dict):
-                            if content_item.get("type") == "input_text":
-                                text = content_item.get("text")
-                                if text:
-                                    append_system_content(text)
-                            elif isinstance(content_item.get("text"), str):
-                                append_system_content(content_item["text"])
-                        elif isinstance(content_item, str):
-                            append_system_content(content_item)
-                elif isinstance(content, str):
-                    append_system_content(content)
-                elif content is not None:
-                    append_system_content(str(content))
+            # ChatGPT rejects system/developer turns unless merged into `instructions`.
+            if role_lower in ("system", "developer") and item_type not in excluded_roles_types:
+                _ingest_system_message_content_for_instructions(
+                    content, append_system_content
+                )
                 continue
 
             if not isinstance(content, list):
