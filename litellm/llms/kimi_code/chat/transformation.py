@@ -80,6 +80,34 @@ class KimiCodeConfig(OpenAIConfig):
         headers.update(get_kimi_code_default_headers())
         return headers
 
+    def transform_request(
+        self,
+        model: str,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        litellm_params: dict,
+        headers: dict,
+    ) -> dict:
+        """
+        Kimi Code requires an explicit ``thinking`` object on chat completions.
+
+        If omitted, the API responds with HTTP 400 and a misleading error:
+        ``invalid temperature: only 0.6 is allowed for this model`` (see
+        kosong/kimi-cli: requests set ``thinking`` via extra_body). Default to
+        disabled reasoning to match non-thinking clients; callers may pass
+        ``thinking`` / map reasoning to enable it.
+        """
+        request = super().transform_request(
+            model=model,
+            messages=messages,
+            optional_params=optional_params,
+            litellm_params=litellm_params,
+            headers=headers,
+        )
+        if request.get("thinking") is None:
+            request["thinking"] = {"type": "disabled"}
+        return request
+
     def get_complete_url(
         self,
         api_base: Optional[str],
