@@ -1,3 +1,4 @@
+import re
 from typing import Any, List, Optional, Tuple
 
 from litellm.exceptions import AuthenticationError
@@ -58,6 +59,84 @@ def _merge_system_and_developer_into_instruction_text(
         part for part in instruction_parts if part.strip() != ""
     )
     return conversation_messages, merged_instructions
+
+
+_CHATGPT_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_CHATGPT_NAME_SUB_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _sanitize_chatgpt_name(name: Any) -> Any:
+    """Coerce a ChatGPT `name` field to match ^[a-zA-Z0-9_-]+$.
+
+    ChatGPT rejects any other character with a 400 `pattern` error, which
+    triggers a full retry/fallback spiral. Replace offending characters with
+    `_` and collapse runs; leave conforming names untouched.
+    """
+    if not isinstance(name, str) or name == "" or _CHATGPT_NAME_RE.match(name):
+        return name
+    cleaned = _CHATGPT_NAME_SUB_RE.sub("_", name)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned or "tool"
+
+
+def _sanitize_tools_names(tools: Any) -> Any:
+    """Walk a `tools` list and sanitize every `name` we can find.
+
+    Handles both OpenAI shape (`{"type":"function","function":{"name":...}}`)
+    and the `custom` shape chatgpt rejects (`{"type":"custom","custom":{"name":...}}`)
+    plus a bare top-level `name`.
+    """
+    if not isinstance(tools, list):
+        return tools
+    sanitized: List[Any] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            sanitized.append(tool)
+            continue
+        new_tool = {**tool}
+        if isinstance(new_tool.get("name"), str):
+            new_tool["name"] = _sanitize_chatgpt_name(new_tool["name"])
+        for key in ("function", "custom"):
+            inner = new_tool.get(key)
+            if isinstance(inner, dict) and isinstance(inner.get("name"), str):
+                new_tool[key] = {
+                    **inner,
+                    "name": _sanitize_chatgpt_name(inner["name"]),
+                }
+        sanitized.append(new_tool)
+    return sanitized
+
+
+def _sanitize_message_names(
+    messages: List[AllMessageValues],
+) -> List[AllMessageValues]:
+    """Sanitize `name` on messages and on any `tool_calls[*].function.name`."""
+    out: List[AllMessageValues] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        new_msg = {**msg}
+        if isinstance(new_msg.get("name"), str):
+            new_msg["name"] = _sanitize_chatgpt_name(new_msg["name"])
+        tool_calls = new_msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            new_calls = []
+            for call in tool_calls:
+                if isinstance(call, dict):
+                    new_call = {**call}
+                    fn = new_call.get("function")
+                    if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+                        new_call["function"] = {
+                            **fn,
+                            "name": _sanitize_chatgpt_name(fn["name"]),
+                        }
+                    new_calls.append(new_call)
+                else:
+                    new_calls.append(call)
+            new_msg["tool_calls"] = new_calls
+        out.append(new_msg)
+    return out
 
 
 class ChatGPTConfig(OpenAIConfig):
@@ -155,6 +234,12 @@ class ChatGPTConfig(OpenAIConfig):
         messages_transformed = self._transform_messages(
             messages=conversation_messages, model=model
         )
+        messages_transformed = _sanitize_message_names(messages_transformed)
+        if "tools" in optional_params:
+            optional_params = {
+                **optional_params,
+                "tools": _sanitize_tools_names(optional_params["tools"]),
+            }
         optional_params.pop("max_retries", None)
         return {
             "model": model,
