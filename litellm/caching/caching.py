@@ -312,9 +312,7 @@ class Cache:
         verbose_logger.debug("\nCreated cache key: %s", cache_key)
         hashed_cache_key = Cache._get_hashed_cache_key(cache_key)
         hashed_cache_key = self._add_namespace_to_cache_key(hashed_cache_key, **kwargs)
-        self._set_preset_cache_key_in_kwargs(
-            preset_cache_key=hashed_cache_key, **kwargs
-        )
+        self._set_preset_cache_key_in_kwargs(hashed_cache_key, kwargs)
         return hashed_cache_key
 
     def _get_param_value(
@@ -374,29 +372,42 @@ class Cache:
 
     def _get_preset_cache_key_from_kwargs(self, **kwargs) -> Optional[str]:
         """
-        Get the preset cache key from kwargs["litellm_params"]
+        Get a preset cache key from kwargs["preset_cache_key"] or
+        kwargs["litellm_params"]["preset_cache_key"].
 
         We use _get_preset_cache_keys for two reasons
 
         1. optional params like max_tokens, get transformed for bedrock -> max_new_tokens
         2. avoid doing duplicate / repeated work
         """
-        if kwargs:
-            if "litellm_params" in kwargs:
-                return kwargs["litellm_params"].get("preset_cache_key", None)
+        if not kwargs:
+            return None
+        top_level = kwargs.get("preset_cache_key")
+        if top_level is not None:
+            return top_level
+        litellm_params = kwargs.get("litellm_params")
+        if isinstance(litellm_params, dict):
+            return litellm_params.get("preset_cache_key", None)
         return None
 
-    def _set_preset_cache_key_in_kwargs(self, preset_cache_key: str, **kwargs) -> None:
+    def _set_preset_cache_key_in_kwargs(
+        self, preset_cache_key: str, kwargs: Dict[str, Any]
+    ) -> None:
         """
         Set the calculated cache key in kwargs
 
         This is used to avoid doing duplicate / repeated work
 
-        Placed in kwargs["litellm_params"]
+        Stored on kwargs["litellm_params"] (same dict the caller passed under
+        that key, so the caller sees the update). Top-level preset_cache_key
+        is not updated here: get_cache_key(**caller_kwargs) receives a copy of
+        the caller mapping, so only nested mutable values propagate.
         """
-        if kwargs:
-            if "litellm_params" in kwargs:
-                kwargs["litellm_params"]["preset_cache_key"] = preset_cache_key
+        if not kwargs:
+            return
+        litellm_params = kwargs.get("litellm_params")
+        if isinstance(litellm_params, dict):
+            litellm_params["preset_cache_key"] = preset_cache_key
 
     @staticmethod
     def _get_hashed_cache_key(cache_key: str) -> str:
