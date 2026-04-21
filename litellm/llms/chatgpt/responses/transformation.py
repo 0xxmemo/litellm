@@ -190,8 +190,21 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 request["instructions"] = f"{extracted_system_content}\n\n{existing_instructions}"
             else:
                 request["instructions"] = extracted_system_content
-        elif not existing_instructions:
-            request["instructions"] = get_chatgpt_default_instructions()
+
+        # Always prepend the Codex base instructions (mirror upstream behaviour). The
+        # chatgpt.com `/backend-api/codex/responses` endpoint — especially `gpt-5.4` —
+        # requires the "You are Codex" preamble; otherwise it replies with
+        # `response.completed` carrying `output=[]`, which surfaces as
+        # "Unknown items in responses API response: []" on the chat-completions bridge.
+        base_instructions = get_chatgpt_default_instructions()
+        current_instructions = request.get("instructions") or ""
+        if current_instructions:
+            if base_instructions not in current_instructions:
+                request["instructions"] = (
+                    f"{base_instructions}\n\n{current_instructions}"
+                )
+        else:
+            request["instructions"] = base_instructions
         request["store"] = False
         request["stream"] = True
         include = list(request.get("include") or [])
