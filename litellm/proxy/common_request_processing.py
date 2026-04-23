@@ -453,10 +453,21 @@ class ProxyBaseLLMRequestProcessing:
         request_data: Optional[dict] = {},
         timeout: Optional[Union[float, int, httpx.Timeout]] = None,
         litellm_logging_obj: Optional[LiteLLMLoggingObj] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
         **kwargs,
     ) -> dict:
         exclude_values = {"", None, "None"}
         hidden_params = hidden_params or {}
+
+        # Derive a total if the caller supplied only prompt/completion counts.
+        if (
+            total_tokens is None
+            and prompt_tokens is not None
+            and completion_tokens is not None
+        ):
+            total_tokens = prompt_tokens + completion_tokens
 
         # Resolve the underlying model name (post-alias, post-fallback) so callers
         # can record which deployment actually served the request without a
@@ -506,6 +517,15 @@ class ProxyBaseLLMRequestProcessing:
             "x-litellm-call-id": call_id,
             "x-litellm-model-id": model_id,
             "x-litellm-model-name": resolved_model_name,
+            "x-litellm-prompt-tokens": (
+                str(prompt_tokens) if prompt_tokens is not None else None
+            ),
+            "x-litellm-completion-tokens": (
+                str(completion_tokens) if completion_tokens is not None else None
+            ),
+            "x-litellm-total-tokens": (
+                str(total_tokens) if total_tokens is not None else None
+            ),
             "x-litellm-cache-key": cache_key,
             "x-litellm-model-api-base": (
                 api_base.split("?")[0] if api_base else None
@@ -1276,6 +1296,28 @@ class ProxyBaseLLMRequestProcessing:
         )  # get any updated response headers
         additional_headers = hidden_params.get("additional_headers", {}) or {}
 
+        # Pull token counts off `response.usage` so downstream proxies can
+        # log them straight from headers without cloning the body. Tolerates
+        # OpenAI (prompt/completion) and Anthropic (input/output) shapes and
+        # both Pydantic objects and plain dicts.
+        usage_obj = getattr(response, "usage", None)
+        if usage_obj is None and isinstance(response, dict):
+            usage_obj = response.get("usage")
+        prompt_tokens_hdr: Optional[int] = None
+        completion_tokens_hdr: Optional[int] = None
+        total_tokens_hdr: Optional[int] = None
+        if usage_obj is not None:
+            def _u(key: str) -> Optional[int]:
+                val = (
+                    usage_obj.get(key)
+                    if isinstance(usage_obj, dict)
+                    else getattr(usage_obj, key, None)
+                )
+                return int(val) if isinstance(val, (int, float)) else None
+            prompt_tokens_hdr = _u("prompt_tokens") or _u("input_tokens")
+            completion_tokens_hdr = _u("completion_tokens") or _u("output_tokens")
+            total_tokens_hdr = _u("total_tokens")
+
         fastapi_response.headers.update(
             ProxyBaseLLMRequestProcessing.get_custom_headers(
                 user_api_key_dict=user_api_key_dict,
@@ -1290,6 +1332,9 @@ class ProxyBaseLLMRequestProcessing:
                 request_data=self.data,
                 hidden_params=hidden_params,
                 litellm_logging_obj=logging_obj,
+                prompt_tokens=prompt_tokens_hdr,
+                completion_tokens=completion_tokens_hdr,
+                total_tokens=total_tokens_hdr,
                 **additional_headers,
             )
         )
