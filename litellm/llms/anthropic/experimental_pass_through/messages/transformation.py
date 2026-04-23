@@ -27,6 +27,38 @@ DEFAULT_ANTHROPIC_API_VERSION = "2023-06-01"
 
 
 class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
+    @staticmethod
+    def _supports_output_config(model: str) -> bool:
+        """Only Claude 4.6+ Sonnet/Opus accept top-level output_config.effort.
+        Haiku 4.5 and earlier models return 400 'This model does not support
+        the effort parameter' when it leaks through from a parent session."""
+        ml = model.lower()
+        return any(
+            v in ml
+            for v in (
+                "opus-4-6", "opus_4_6", "opus-4.6", "opus_4.6",
+                "sonnet-4-6", "sonnet_4_6", "sonnet-4.6", "sonnet_4.6",
+                "opus-4-7", "opus_4_7", "opus-4.7", "opus_4.7",
+                "sonnet-4-7", "sonnet_4_7", "sonnet-4.7", "sonnet_4.7",
+            )
+        )
+
+    @staticmethod
+    def _supports_thinking(model: str) -> bool:
+        """Extended thinking is supported on Sonnet 3.7+ and Opus/Sonnet 4.x.
+        Haiku (any version) does not support the thinking block."""
+        ml = model.lower()
+        if "haiku" in ml:
+            return False
+        return any(
+            v in ml
+            for v in (
+                "3-7", "3_7", "3.7",
+                "sonnet-4", "sonnet_4", "sonnet.4",
+                "opus-4", "opus_4", "opus.4",
+            )
+        )
+
     def get_supported_anthropic_messages_params(self, model: str) -> list:
         return [
             "messages",
@@ -184,6 +216,14 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
                 message="max_tokens is required for Anthropic /v1/messages API",
                 status_code=400,
             )
+
+        # Strip params the target model rejects. Claude Code sub-agents inherit
+        # output_config/thinking from the parent session and leak them into
+        # Haiku-family requests, which Anthropic then 400s.
+        if not self._supports_output_config(model):
+            anthropic_messages_optional_request_params.pop("output_config", None)
+        if not self._supports_thinking(model):
+            anthropic_messages_optional_request_params.pop("thinking", None)
 
         # Filter out x-anthropic-billing-header from system messages
         system_param = anthropic_messages_optional_request_params.get("system")

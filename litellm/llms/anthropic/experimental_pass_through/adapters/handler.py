@@ -181,7 +181,14 @@ class LiteLLMMessagesToCompletionTransformationHandler:
                 "include_usage": True,
             }
 
-        excluded_keys = {"anthropic_messages"}
+        excluded_keys = {
+            "anthropic_messages",
+            # output_config is an Anthropic-only top-level param. When the
+            # router falls back to an OpenAI-compat provider (chatgpt, dashscope,
+            # azure, bedrock-nova), leaking it produces 400s or confusing
+            # auth-shaped errors. See upstream BerriAI/litellm db9914287a.
+            "output_config",
+        }
         extra_kwargs = extra_kwargs or {}
         for key, value in extra_kwargs.items():
             if (
