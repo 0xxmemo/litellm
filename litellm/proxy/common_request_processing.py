@@ -458,6 +458,23 @@ class ProxyBaseLLMRequestProcessing:
         exclude_values = {"", None, "None"}
         hidden_params = hidden_params or {}
 
+        # Resolve the underlying model name (post-alias, post-fallback) so callers
+        # can record which deployment actually served the request without a
+        # follow-up /model/info lookup. `request_data["deployment"]` is populated
+        # by base_process_llm_request once the router picks a winning deployment.
+        resolved_model_name: Optional[str] = None
+        deployment = (request_data or {}).get("deployment")
+        if deployment is not None:
+            params = getattr(deployment, "litellm_params", None)
+            if params is None and isinstance(deployment, dict):
+                params = deployment.get("litellm_params")
+            if isinstance(params, dict):
+                resolved_model_name = params.get("model")
+            elif params is not None:
+                resolved_model_name = getattr(params, "model", None)
+        if not resolved_model_name:
+            resolved_model_name = hidden_params.get("model")
+
         # Extract discount and margin info from cost_breakdown if available
         (
             original_cost,
@@ -488,6 +505,7 @@ class ProxyBaseLLMRequestProcessing:
         headers = {
             "x-litellm-call-id": call_id,
             "x-litellm-model-id": model_id,
+            "x-litellm-model-name": resolved_model_name,
             "x-litellm-cache-key": cache_key,
             "x-litellm-model-api-base": (
                 api_base.split("?")[0] if api_base else None
