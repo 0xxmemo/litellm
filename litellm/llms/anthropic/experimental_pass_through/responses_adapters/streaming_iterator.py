@@ -117,6 +117,10 @@ class AnthropicResponsesStreamWrapper:
                     or (item.get("name") if isinstance(item, dict) else None)
                     or ""
                 )
+                # Reverse the outbound rename in transformation._sanitize_chatgpt_tool_name
+                # so Claude Code receives tool_use blocks with the original name.
+                from .transformation import _unsanitize_chatgpt_tool_name
+                name = _unsanitize_chatgpt_tool_name(name) or ""
                 block_idx = self._next_block_index()
                 if item_id:
                     self._item_id_to_block_index[item_id] = block_idx

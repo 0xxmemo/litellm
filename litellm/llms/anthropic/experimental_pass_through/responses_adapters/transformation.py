@@ -29,6 +29,47 @@ from litellm.types.llms.anthropic_messages.anthropic_response import (
 from litellm.types.llms.openai import ResponsesAPIResponse
 
 
+# Function-tool names that ChatGPT's `/backend-api/codex/responses` validator
+# treats as hosted-tool keywords and silently strips the `name` field from,
+# then reports as `Missing required parameter: 'tools[n].name'`. We work around
+# the collision by suffixing the user's tool with CHATGPT_SAFE_TOOL_SUFFIX on
+# the way out and stripping the suffix on the way back in. The set is
+# lowercased for case-insensitive matching.
+CHATGPT_RESERVED_TOOL_NAMES_CI = frozenset(
+    {
+        "websearch",
+        "filesearch",
+        "computer",
+        "computeruse",
+        "codeinterpreter",
+        "imagegeneration",
+    }
+)
+CHATGPT_SAFE_TOOL_SUFFIX = "__litellm_safe"
+
+
+def _sanitize_chatgpt_tool_name(name: str) -> str:
+    """If ``name`` collides with a ChatGPT hosted-tool keyword, suffix it.
+
+    Lowercase + underscore-stripped form is matched against
+    ``CHATGPT_RESERVED_TOOL_NAMES_CI``. ``WebSearch`` and ``web_search`` both
+    normalise to ``websearch`` and trip the collision.
+    """
+    if not isinstance(name, str) or not name:
+        return name
+    normalised = name.lower().replace("_", "").replace("-", "")
+    if normalised in CHATGPT_RESERVED_TOOL_NAMES_CI:
+        return name + CHATGPT_SAFE_TOOL_SUFFIX
+    return name
+
+
+def _unsanitize_chatgpt_tool_name(name: Optional[str]) -> Optional[str]:
+    """Strip the safe-suffix from ``name`` if it was added by our outbound rename."""
+    if isinstance(name, str) and name.endswith(CHATGPT_SAFE_TOOL_SUFFIX):
+        return name[: -len(CHATGPT_SAFE_TOOL_SUFFIX)]
+    return name
+
+
 class LiteLLMAnthropicToResponsesAPIAdapter:
     """
     Converts Anthropic /v1/messages requests to OpenAI Responses API format and
@@ -192,13 +233,18 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
             tool_dict = cast(Dict[str, Any], tool)
             tool_type = tool_dict.get("type", "")
             tool_name = tool_dict.get("name", "")
-            # web_search tool
-            if (
-                isinstance(tool_type, str) and tool_type.startswith("web_search")
-            ) or tool_name == "web_search":
+            # web_search tool — only the canonical Anthropic-hosted shape (typed)
+            # is converted to the ChatGPT hosted preview tool. A bare function
+            # tool *named* "web_search" or "WebSearch" should NOT be treated as
+            # hosted: the Codex validator drops its name and 400s, so we route
+            # it through the suffix-rename below instead.
+            if isinstance(tool_type, str) and tool_type.startswith("web_search"):
                 result.append({"type": "web_search_preview"})
                 continue
-            func_tool: Dict[str, Any] = {"type": "function", "name": tool_name}
+            func_tool: Dict[str, Any] = {
+                "type": "function",
+                "name": _sanitize_chatgpt_tool_name(tool_name),
+            }
             if "description" in tool_dict:
                 func_tool["description"] = tool_dict["description"]
             if "input_schema" in tool_dict:
@@ -215,7 +261,10 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
         if tc_type == "any":
             return {"type": "required"}
         elif tc_type == "tool":
-            return {"type": "function", "name": tool_choice.get("name", "")}
+            return {
+                "type": "function",
+                "name": _sanitize_chatgpt_tool_name(tool_choice.get("name", "")),
+            }
         return {"type": "auto"}
 
     @staticmethod
@@ -441,7 +490,7 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
                     AnthropicResponseContentBlockToolUse(
                         type="tool_use",
                         id=item.call_id or item.id or "",
-                        name=item.name,
+                        name=_unsanitize_chatgpt_tool_name(item.name) or "",
                         input=input_data,
                     ).model_dump()
                 )
@@ -466,7 +515,8 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
                         AnthropicResponseContentBlockToolUse(
                             type="tool_use",
                             id=item.get("call_id") or item.get("id", ""),
-                            name=item.get("name", ""),
+                            name=_unsanitize_chatgpt_tool_name(item.get("name", ""))
+                            or "",
                             input=input_data,
                         ).model_dump()
                     )
