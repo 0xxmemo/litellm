@@ -29,8 +29,12 @@ from ..responses_adapters.handler import LiteLLMMessagesToResponsesAPIHandler
 from .utils import AnthropicMessagesRequestUtils, mock_response
 
 # Providers that are routed directly to the OpenAI Responses API instead of
-# going through chat/completions.
-_RESPONSES_API_PROVIDERS = frozenset({"openai"})
+# going through chat/completions. ChatGPT (codex) is in this set because its
+# `/backend-api/codex/responses` endpoint validates tools as Responses-format
+# (flat `{type:"function", name:...}`); routing through chat/completions sends
+# the nested `{type:"function", function:{name:...}}` shape and trips a
+# "Missing required parameter: tools[n].name" 400 from the codex backend.
+_RESPONSES_API_PROVIDERS = frozenset({"openai", "chatgpt"})
 
 
 def _should_route_to_responses_api(custom_llm_provider: Optional[str]) -> bool:
