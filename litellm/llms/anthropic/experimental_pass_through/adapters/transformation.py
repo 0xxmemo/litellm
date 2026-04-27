@@ -1324,28 +1324,37 @@ class LiteLLMAnthropicMessagesAdapter:
             openai_finish_reason=response.choices[0].finish_reason  # type: ignore
         )
         # extract usage
-        usage: Usage = getattr(response, "usage")
-        uncached_input_tokens = usage.prompt_tokens or 0
-        cached_tokens = 0
-        if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
-            cached_tokens = (
-                getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
-            )
-            uncached_input_tokens -= cached_tokens
+        # Chunk-shape responses rehydrated from cache (websearch_interception
+        # stream-flip path) often have no `usage` attribute on the rebuilt
+        # ModelResponse. Default to zeros — the response is still useful even
+        # if we can't bill it accurately. Better than 500ing the user.
+        usage: Optional[Usage] = getattr(response, "usage", None)
+        if usage is None:
+            uncached_input_tokens = 0
+            cached_tokens = 0
+            anthropic_usage = AnthropicUsage(input_tokens=0, output_tokens=0)
+        else:
+            uncached_input_tokens = usage.prompt_tokens or 0
+            cached_tokens = 0
+            if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
+                cached_tokens = (
+                    getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+                )
+                uncached_input_tokens -= cached_tokens
 
-        anthropic_usage = AnthropicUsage(
-            input_tokens=uncached_input_tokens,
-            output_tokens=usage.completion_tokens or 0,
-        )
-        if (
-            hasattr(usage, "_cache_creation_input_tokens")
-            and usage._cache_creation_input_tokens > 0
-        ):
-            anthropic_usage[
-                "cache_creation_input_tokens"
-            ] = usage._cache_creation_input_tokens
-        if cached_tokens > 0:
-            anthropic_usage["cache_read_input_tokens"] = cached_tokens
+            anthropic_usage = AnthropicUsage(
+                input_tokens=uncached_input_tokens,
+                output_tokens=usage.completion_tokens or 0,
+            )
+            if (
+                hasattr(usage, "_cache_creation_input_tokens")
+                and usage._cache_creation_input_tokens > 0
+            ):
+                anthropic_usage[
+                    "cache_creation_input_tokens"
+                ] = usage._cache_creation_input_tokens
+            if cached_tokens > 0:
+                anthropic_usage["cache_read_input_tokens"] = cached_tokens
 
         translated_obj = AnthropicMessagesResponse(
             id=response.id,

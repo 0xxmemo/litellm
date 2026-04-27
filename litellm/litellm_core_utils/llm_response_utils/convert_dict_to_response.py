@@ -540,7 +540,9 @@ def convert_to_model_response_object(  # noqa: PLR0915
             # when the cache layer rehydrates a chunk that was stored against a
             # non-stream key — e.g. when websearch_interception flips
             # stream=True→False and the agentic loop caches a single SSE chunk.
-            # Without this, we crash at `choice["message"]` with KeyError.
+            # Without this, we crash at `choice["message"]` with KeyError, and
+            # downstream consumers that read `response.usage` crash because
+            # chunk shapes typically omit usage.
             if response_object.get("object") == "chat.completion.chunk" or any(
                 isinstance(c, dict) and "delta" in c and "message" not in c
                 for c in (response_object.get("choices") or [])
@@ -563,6 +565,18 @@ def convert_to_model_response_object(  # noqa: PLR0915
                     "object": "chat.completion",
                     "choices": normalized_choices,
                 }
+                # Chunks usually omit usage. Synthesize a zero record so the
+                # `if "usage" in response_object` block below populates
+                # model_response_object.usage and downstream readers (e.g.
+                # AnthropicMessagesAdapter.translate_openai_response_to_anthropic
+                # at transformation.py:1327 doing `getattr(response, "usage")`)
+                # don't AttributeError.
+                if not response_object.get("usage"):
+                    response_object["usage"] = {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    }
             choice_list: List[Choices] = []
 
             assert response_object["choices"] is not None and isinstance(
