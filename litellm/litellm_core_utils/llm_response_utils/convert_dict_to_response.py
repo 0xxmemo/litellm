@@ -534,6 +534,35 @@ def convert_to_model_response_object(  # noqa: PLR0915
             if stream is True:
                 # for returning cached responses, we need to yield a generator
                 return convert_to_streaming_response(response_object=response_object)
+            # Normalize chunk-shaped responses (object="chat.completion.chunk",
+            # choices[].delta) into completion shape (object="chat.completion",
+            # choices[].message) when callers ask for non-stream. This happens
+            # when the cache layer rehydrates a chunk that was stored against a
+            # non-stream key — e.g. when websearch_interception flips
+            # stream=True→False and the agentic loop caches a single SSE chunk.
+            # Without this, we crash at `choice["message"]` with KeyError.
+            if response_object.get("object") == "chat.completion.chunk" or any(
+                isinstance(c, dict) and "delta" in c and "message" not in c
+                for c in (response_object.get("choices") or [])
+            ):
+                normalized_choices: List[dict] = []
+                for c in response_object.get("choices") or []:
+                    if not isinstance(c, dict):
+                        normalized_choices.append(c)
+                        continue
+                    nc = dict(c)
+                    if "message" not in nc and "delta" in nc:
+                        delta_msg = nc.pop("delta") or {}
+                        if not isinstance(delta_msg, dict):
+                            delta_msg = {}
+                        delta_msg.setdefault("role", "assistant")
+                        nc["message"] = delta_msg
+                    normalized_choices.append(nc)
+                response_object = {
+                    **response_object,
+                    "object": "chat.completion",
+                    "choices": normalized_choices,
+                }
             choice_list: List[Choices] = []
 
             assert response_object["choices"] is not None and isinstance(

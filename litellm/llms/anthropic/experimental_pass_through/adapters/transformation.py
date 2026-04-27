@@ -1190,12 +1190,21 @@ class LiteLLMAnthropicMessagesAdapter:
     ) -> List[Dict[str, Any]]:
         new_content: List[Dict[str, Any]] = []
         for choice in choices:
+            # `Choices` exposes `.message`, `StreamingChoices` exposes `.delta`.
+            # Both carry the same content/tool_calls/reasoning fields, so bind
+            # whichever is present and treat them uniformly. This protects
+            # against StreamingChoices leaking into the non-stream adapter
+            # path (e.g. when websearch_interception flips stream=True→False
+            # and the cache layer rehydrates a chunk-shape record).
+            msg = getattr(choice, "message", None) or getattr(choice, "delta", None)
+            if msg is None:
+                continue
             # Handle thinking blocks first
             if (
-                hasattr(choice.message, "thinking_blocks")
-                and choice.message.thinking_blocks
+                hasattr(msg, "thinking_blocks")
+                and msg.thinking_blocks
             ):
-                for thinking_block in choice.message.thinking_blocks:
+                for thinking_block in msg.thinking_blocks:
                     if thinking_block.get("type") == "thinking":
                         thinking_value = thinking_block.get("thinking", "")
                         signature_value = thinking_block.get("signature", "")
@@ -1224,30 +1233,28 @@ class LiteLLMAnthropicMessagesAdapter:
                         )
             # Handle reasoning_content when thinking_blocks is not present
             elif (
-                hasattr(choice.message, "reasoning_content")
-                and choice.message.reasoning_content
+                hasattr(msg, "reasoning_content")
+                and msg.reasoning_content
             ):
                 new_content.append(
                     AnthropicResponseContentBlockThinking(
                         type="thinking",
-                        thinking=str(choice.message.reasoning_content),
+                        thinking=str(msg.reasoning_content),
                         signature=None,
                     ).model_dump()
                 )
 
             # Handle text content
-            if choice.message.content is not None:
+            if getattr(msg, "content", None) is not None:
                 new_content.append(
                     AnthropicResponseContentBlockText(
-                        type="text", text=choice.message.content
+                        type="text", text=msg.content
                     ).model_dump()
                 )
             # Handle tool calls (in parallel to text content)
-            if (
-                choice.message.tool_calls is not None
-                and len(choice.message.tool_calls) > 0
-            ):
-                for tool_call in choice.message.tool_calls:
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls is not None and len(tool_calls) > 0:
+                for tool_call in tool_calls:
                     # Extract signature from provider_specific_fields only
                     signature = self._extract_signature_from_tool_call(tool_call)
 
