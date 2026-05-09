@@ -337,24 +337,35 @@ def _insert_assistant_continue_message(
     """
     Add assistant continuation messages between consecutive user messages.
 
-    Only checks directly adjacent messages to preserve backward compatibility.
+    Skips tool messages and assistant messages with tool calls in the
+    alternation check, matching strict templates like llama.cpp.
     """
     if not ensure_alternating_roles or len(messages) <= 1:
         return messages
 
     continue_message = assistant_continue_message or DEFAULT_ASSISTANT_CONTINUE_MESSAGE
 
+    # Find indexes where assistant_continue should be inserted (before that index)
+    insert_before_indexes: set = set()
+
+    for i in range(len(messages)):
+        curr = messages[i]
+        if _counts_for_alternation(curr) and curr["role"] == "user":
+            # Look backwards for the previous counted message
+            j = i - 1
+            while j >= 0:
+                if _counts_for_alternation(messages[j]):
+                    if messages[j]["role"] == "user":
+                        insert_before_indexes.add(i)
+                    break
+                j -= 1
+
+    # Build the result with assistant_continue inserted at the right positions
     modified_messages: List[AllMessageValues] = []
     for i, message in enumerate(messages):
-        if (
-            i < len(messages) - 1
-            and message.get("role") == "user"
-            and messages[i + 1].get("role") == "user"
-        ):
-            modified_messages.append(message)
+        if i in insert_before_indexes:
             modified_messages.append(continue_message)
-        else:
-            modified_messages.append(message)
+        modified_messages.append(message)
 
     return modified_messages
 
@@ -425,12 +436,21 @@ def update_messages_with_model_file_ids(
     """
     Updates messages with model file ids.
 
+    For managed files (unified file IDs), uses model_file_id_mapping if it
+    resolves the id, otherwise decodes the base64-encoded unified file ID
+    and extracts the llm_output_file_id directly. Mirrors the Responses-API
+    sibling `update_responses_input_with_model_file_ids`.
+
     model_file_id_mapping: Dict[str, Dict[str, str]] = {
         "litellm_proxy/file_id": {
             "model_id": "provider_file_id"
         }
     }
     """
+    from litellm.proxy.openai_files_endpoints.common_utils import (
+        _is_base64_encoded_unified_file_id,
+        convert_b64_uid_to_unified_uid,
+    )
 
     for message in messages:
         if message.get("role") == "user":
@@ -439,9 +459,22 @@ def update_messages_with_model_file_ids(
                 if isinstance(content, str):
                     continue
                 for c in content:
-                    if c["type"] == "file":
+                    if not isinstance(c, dict):
+                        # Content list items aren't always dicts. e.g.
+                        # text_completion forwards a token-ids list/list-of-
+                        # lists through this path. Skip non-dict items
+                        # instead of indexing into them.
+                        continue
+                    if c.get("type") == "file":
                         file_object = cast(ChatCompletionFileObject, c)
-                        file_object_file_field = file_object["file"]
+                        file_object_file_field = file_object.get("file")
+                        if not isinstance(file_object_file_field, dict):
+                            # Content block has `type: "file"` but not the
+                            # OpenAI Chat Completions shape (e.g. a LangChain
+                            # v1 standardized file block, or a provider-native
+                            # shape that also uses `type: "file"`). Nothing to
+                            # remap here, so skip instead of crashing.
+                            continue
                         file_id = file_object_file_field.get("file_id")
                         format = file_object_file_field.get(
                             "format", get_format_from_file_id(file_id)
@@ -450,9 +483,23 @@ def update_messages_with_model_file_ids(
                         if file_id:
                             provider_file_id = (
                                 model_file_id_mapping.get(file_id, {}).get(model_id)
-                                or file_id
+                                if model_file_id_mapping
+                                else None
                             )
-                            file_object_file_field["file_id"] = provider_file_id
+                            if (
+                                not provider_file_id
+                                and _is_base64_encoded_unified_file_id(file_id)
+                            ):
+                                unified_file_id = convert_b64_uid_to_unified_uid(
+                                    file_id
+                                )
+                                if "llm_output_file_id," in unified_file_id:
+                                    provider_file_id = unified_file_id.split(
+                                        "llm_output_file_id,"
+                                    )[1].split(";")[0]
+                            file_object_file_field["file_id"] = (
+                                provider_file_id or file_id
+                            )
                         if format:
                             file_object_file_field["format"] = format
     return messages
@@ -1049,7 +1096,12 @@ def get_file_ids_from_messages(messages: List[AllMessageValues]) -> List[str]:
                 for c in content:
                     if c["type"] == "file":
                         file_object = cast(ChatCompletionFileObject, c)
-                        file_object_file_field = file_object["file"]
+                        file_object_file_field = file_object.get("file")
+                        if not isinstance(file_object_file_field, dict):
+                            # Content block has `type: "file"` but not the
+                            # OpenAI Chat Completions shape. No file_id to
+                            # extract, so skip instead of raising KeyError.
+                            continue
                         file_id = file_object_file_field.get("file_id")
                         if file_id:
                             file_ids.append(file_id)

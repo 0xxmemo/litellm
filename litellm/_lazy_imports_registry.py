@@ -171,6 +171,7 @@ LLM_CONFIG_NAMES = (
     "CohereChatConfig",
     "AnthropicMessagesConfig",
     "AmazonAnthropicClaudeMessagesConfig",
+    "AmazonMantleMessagesConfig",
     "TogetherAIConfig",
     "NLPCloudConfig",
     "VertexGeminiConfig",
@@ -717,6 +718,10 @@ _LLM_CONFIGS_IMPORT_MAP = {
     "AmazonAnthropicClaudeMessagesConfig": (
         ".llms.bedrock.messages.invoke_transformations.anthropic_claude3_transformation",
         "AmazonAnthropicClaudeMessagesConfig",
+    ),
+    "AmazonMantleMessagesConfig": (
+        ".llms.bedrock.messages.mantle_transformation",
+        "AmazonMantleMessagesConfig",
     ),
     "TogetherAIConfig": (".llms.together_ai.chat", "TogetherAIConfig"),
     "NLPCloudConfig": (".llms.nlp_cloud.chat.handler", "NLPCloudConfig"),

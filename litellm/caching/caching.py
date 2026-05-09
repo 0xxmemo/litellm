@@ -312,7 +312,12 @@ class Cache:
         verbose_logger.debug("\nCreated cache key: %s", cache_key)
         hashed_cache_key = Cache._get_hashed_cache_key(cache_key)
         hashed_cache_key = self._add_namespace_to_cache_key(hashed_cache_key, **kwargs)
-        self._set_preset_cache_key_in_kwargs(hashed_cache_key, kwargs)
+        # Remove preset_cache_key from kwargs to avoid "got multiple values" TypeError
+        # when kwargs already contains preset_cache_key from upstream callers
+        kwargs_for_preset = {k: v for k, v in kwargs.items() if k != "preset_cache_key"}
+        self._set_preset_cache_key_in_kwargs(
+            preset_cache_key=hashed_cache_key, **kwargs_for_preset
+        )
         return hashed_cache_key
 
     def _get_param_value(
@@ -372,42 +377,29 @@ class Cache:
 
     def _get_preset_cache_key_from_kwargs(self, **kwargs) -> Optional[str]:
         """
-        Get a preset cache key from kwargs["preset_cache_key"] or
-        kwargs["litellm_params"]["preset_cache_key"].
+        Get the preset cache key from kwargs["litellm_params"]
 
         We use _get_preset_cache_keys for two reasons
 
         1. optional params like max_tokens, get transformed for bedrock -> max_new_tokens
         2. avoid doing duplicate / repeated work
         """
-        if not kwargs:
-            return None
-        top_level = kwargs.get("preset_cache_key")
-        if top_level is not None:
-            return top_level
-        litellm_params = kwargs.get("litellm_params")
-        if isinstance(litellm_params, dict):
-            return litellm_params.get("preset_cache_key", None)
+        if kwargs:
+            if "litellm_params" in kwargs:
+                return kwargs["litellm_params"].get("preset_cache_key", None)
         return None
 
-    def _set_preset_cache_key_in_kwargs(
-        self, preset_cache_key: str, kwargs: Dict[str, Any]
-    ) -> None:
+    def _set_preset_cache_key_in_kwargs(self, preset_cache_key: str, **kwargs) -> None:
         """
         Set the calculated cache key in kwargs
 
         This is used to avoid doing duplicate / repeated work
 
-        Stored on kwargs["litellm_params"] (same dict the caller passed under
-        that key, so the caller sees the update). Top-level preset_cache_key
-        is not updated here: get_cache_key(**caller_kwargs) receives a copy of
-        the caller mapping, so only nested mutable values propagate.
+        Placed in kwargs["litellm_params"]
         """
-        if not kwargs:
-            return
-        litellm_params = kwargs.get("litellm_params")
-        if isinstance(litellm_params, dict):
-            litellm_params["preset_cache_key"] = preset_cache_key
+        if kwargs:
+            if "litellm_params" in kwargs:
+                kwargs["litellm_params"]["preset_cache_key"] = preset_cache_key
 
     @staticmethod
     def _get_hashed_cache_key(cache_key: str) -> str:
@@ -440,9 +432,10 @@ class Cache:
             str: The final hashed cache key with the redis namespace.
         """
         dynamic_cache_control: DynamicCacheControl = kwargs.get("cache", {})
+        metadata = kwargs.get("metadata") or {}
         namespace = (
             dynamic_cache_control.get("namespace")
-            or kwargs.get("metadata", {}).get("redis_namespace")
+            or metadata.get("redis_namespace")
             or self.namespace
         )
         if namespace:
@@ -658,7 +651,10 @@ class Cache:
             verbose_logger.exception(f"LiteLLM Cache: Excepton add_cache: {str(e)}")
 
     def _convert_to_cached_embedding(
-        self, embedding_response: Any, model: Optional[str]
+        self,
+        embedding_response: Any,
+        model: Optional[str],
+        prompt_tokens_details: Optional[dict] = None,
     ) -> CachedEmbedding:
         """
         Convert any embedding response into the standardized CachedEmbedding TypedDict format.
@@ -670,6 +666,7 @@ class Cache:
                     "index": embedding_response.get("index"),
                     "object": embedding_response.get("object"),
                     "model": model,
+                    "prompt_tokens_details": prompt_tokens_details,
                 }
             elif hasattr(embedding_response, "model_dump"):
                 data = embedding_response.model_dump()
@@ -678,6 +675,7 @@ class Cache:
                     "index": data.get("index"),
                     "object": data.get("object"),
                     "model": model,
+                    "prompt_tokens_details": prompt_tokens_details,
                 }
             else:
                 data = vars(embedding_response)
@@ -686,9 +684,53 @@ class Cache:
                     "index": data.get("index"),
                     "object": data.get("object"),
                     "model": model,
+                    "prompt_tokens_details": prompt_tokens_details,
                 }
         except KeyError as e:
             raise ValueError(f"Missing expected key in embedding response: {e}")
+
+    def _get_per_item_prompt_tokens_details(
+        self,
+        result: EmbeddingResponse,
+        idx_in_result_data: int,
+    ) -> Optional[dict]:
+        """
+        Extract per-item prompt_tokens_details from a response for caching.
+
+        For single-item responses (common for multimodal providers like Bedrock Titan,
+        Nova, Vertex AI), returns the full prompt_tokens_details.
+        For multi-item responses, distributes integer fields evenly across items
+        so that summing all per-item details reconstructs the original totals.
+        """
+        if result.usage is None or result.usage.prompt_tokens_details is None:
+            return None
+
+        details = result.usage.prompt_tokens_details
+        if hasattr(details, "model_dump"):
+            details_dict = details.model_dump(exclude_none=True)
+        elif isinstance(details, dict):
+            details_dict = {k: v for k, v in details.items() if v is not None}
+        else:
+            return None
+
+        if not details_dict:
+            return None
+
+        num_items = len(result.data)
+        if num_items <= 1:
+            return details_dict
+
+        # Distribute integer/float fields evenly across items
+        per_item: dict = {}
+        for key, value in details_dict.items():
+            if isinstance(value, int):
+                quotient, remainder = divmod(value, num_items)
+                per_item[key] = quotient + (1 if idx_in_result_data < remainder else 0)
+            elif isinstance(value, float):
+                per_item[key] = value / num_items
+            else:
+                per_item[key] = value
+        return per_item if per_item else None
 
     def add_embedding_response_to_cache(
         self,
@@ -701,10 +743,18 @@ class Cache:
         kwargs["cache_key"] = preset_cache_key
         embedding_response = result.data[idx_in_result_data]
 
+        # Extract per-item prompt_tokens_details from response usage
+        prompt_tokens_details = self._get_per_item_prompt_tokens_details(
+            result=result,
+            idx_in_result_data=idx_in_result_data,
+        )
+
         # Always convert to properly typed CachedEmbedding
         model_name = result.model
         embedding_dict: CachedEmbedding = self._convert_to_cached_embedding(
-            embedding_response, model_name
+            embedding_response,
+            model_name,
+            prompt_tokens_details=prompt_tokens_details,
         )
 
         cache_key, cached_data, kwargs = self._add_cache_logic(
